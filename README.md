@@ -113,6 +113,7 @@ python -m pytest tests/ -q
   does **not** source `~/.hermes/.env`; the server reads tokens exclusively from
   `<repo_root>/.env`.
 
-## Deferred
+## Roadmap
 
-x-wing repo reconciliation, OpenCode wiring, media/delete/unlike/unrepost tools, write pacing gate.
+See [`AGENTS.md`](AGENTS.md#roadmap-deferred-out-of-scope). Repo reconciliation is
+already complete: this repo (`bob0x-ai/x-wing-mcp`) is the canonical source of truth.

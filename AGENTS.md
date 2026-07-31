@@ -110,13 +110,33 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
     `<repo_root>/.env`.
 - Restart the Hermes gateway(s) after any `.env` or config change.
 
-## Deferred (out of scope)
+## Roadmap (deferred, out of scope)
 
-x-wing repo reconciliation, OpenCode wiring, media/delete/unlike/unrepost tools, write pacing gate.
+Ranked by value-per-effort. Each item is done when: tests green, handshake lists the
+expected tools, no `.env` changes beyond documented ones.
+
+1. **Write-tool parity: media / delete / unlike / unrepost**
+   CLI cores already exist (`cmd_upload_media`, `cmd_delete`, `cmd_unlike`, `cmd_unrepost`
+   in `x_client.py`, tests in `tests/test_posts.py` + `tests/test_interactions.py`). Add
+   `api_*` cores + MCP tool registration in `server.py` + schema tests.
+   `api_post` already accepts media IDs, so `upload_media` completes the chain.
+   Smallest, self-contained, highest value.
+
+2. **Write pacing gate**
+   Protect the X write budget: configurable per-window caps (e.g. hourly/daily) on the
+   7 write tools, set via `.env`. Currently constraint #5 is policy, not code.
+
+3. **OpenCode wiring**
+   Mirror the Hermes wiring in OpenCode config (`opencode.jsonc`): single `x-wing` MCP
+   entry, read-only filtering where needed. One entry, same wrapper script.
+
+4. **x-wing repo reconciliation** *(resolved)*
+   Upstream `bob0x-ai/x-wing` and `bob0x-ai/x-ray` repos deleted; local upstream copies
+   at `/home/ubuntu/projects/x-wing` and `/home/ubuntu/projects/x_mcp` removed. This
+   repo (`bob0x-ai/x-wing-mcp`) is now the canonical source of truth.
 
 ## Reference facts
 
-- Live x-wing source: `/home/ubuntu/.hermes/skills/x-wing/scripts/x_client.py`
-- Live x_data source: `/home/ubuntu/projects/x_mcp/src/`
+- Canonical repo: `https://github.com/bob0x-ai/x-wing-mcp`
 - Token app: x-wing app `Zkh0NG1...` (read + write scopes)
 - Python: 3.11.15; `uv`/`uvx` available at `~/.local/bin`
