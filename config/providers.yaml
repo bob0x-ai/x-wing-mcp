@@ -1,0 +1,120 @@
+server:
+  max_fetch_urls: 25
+  max_limit: 100
+  max_collect_limit: 500
+  default_limit: 20
+
+providers:
+  socialdata:
+    enabled: true
+    cooldown_seconds: 60
+    rate_limit:
+      requests_per_minute: 20
+      jitter_seconds: 0.25
+
+  syndication:
+    enabled: true
+    cooldown_seconds: 60
+    rate_limit:
+      requests_per_minute: 12
+      jitter_seconds: 0.35
+
+  official_x:
+    enabled: true
+
+  xpoz:
+    enabled: false
+
+  twikit:
+    enabled: false
+    cookies_file: "/home/ubuntu/.hermes/x_cookies.json"
+    locale: "en-US"
+    cooldown_seconds: 300
+    rate_limit:
+      requests_per_minute: 6
+      jitter_seconds: 0.75
+
+  twscrape:
+    enabled: false
+
+  apify:
+    enabled: false
+
+  xactions:
+    enabled: false
+
+routes:
+  fetch_urls:
+    - syndication
+    - official_x
+    - socialdata
+    - apify
+
+  read_user_posts_recent:
+    - socialdata
+    - syndication
+    - twikit
+    - twscrape
+    - xpoz
+    - apify
+    - official_x
+
+  search_posts:
+    - socialdata
+    - xpoz
+    - twikit
+    - twscrape
+    - apify
+    - official_x
+
+  read_owned_timeline:
+    - official_x
+
+  read_mentions:
+    - official_x
+
+  read_thread:
+    - twikit
+    - twscrape
+    - socialdata
+    - xpoz
+    - apify
+    - official_x
+
+  read_replies:
+    - socialdata
+    - xpoz
+    - apify
+    - twikit
+    - twscrape
+    - official_x
+
+  read_quotes:
+    - socialdata
+    - xpoz
+    - apify
+    - twikit
+    - twscrape
+    - official_x
+
+  read_follow_graph:
+    - socialdata
+    - xpoz
+    - twscrape
+    - twikit
+    - apify
+    - official_x
+
+  collect_posts:
+    - socialdata
+    - xpoz
+    - twscrape
+    - twikit
+    - apify
+
+smoke:
+  user: "@OpenAI"
+  search_query: "from:OpenAI"
+  collect_query: "OpenAI"
+  graph: "followers"
+  limit: 3

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-only X (Twitter) MCP server exposing a subset of x-wing commands.
+"""X (Twitter) MCP server exposing x-wing write tools and x_data read tools.
 
 Transport: stdio. The server never prints to stdout outside the MCP protocol.
 """
@@ -8,14 +8,18 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 REPO_ROOT = Path(__file__).resolve().parent
 os.environ["X_WING_ENV_PATH"] = str(REPO_ROOT / ".env")
+load_dotenv(REPO_ROOT / ".env", override=True)
 
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 
 import x_client
+import xdata.server
 
 mcp = FastMCP("x-wing")
 
@@ -129,6 +133,9 @@ def dm_send(text: str, user: Optional[str] = None, conversation: Optional[str] =
             x_client.api_dm_send(user=user, conversation=conversation, text=text)
         )
     )
+
+
+xdata.server.create_mcp_server(mcp=mcp)
 
 
 def main() -> None:

@@ -53,6 +53,7 @@ def tool_names(tools):
 
 def test_tools_count_and_names(tool_names):
     expected = {
+        # x-wing write tools
         "post",
         "create_thread",
         "like",
@@ -60,6 +61,20 @@ def test_tools_count_and_names(tool_names):
         "follow",
         "unfollow",
         "dm_send",
+        # x_data read tools
+        "x_fetch_urls",
+        "x_read_user_posts",
+        "x_search_posts",
+        "x_read_owned_timeline",
+        "x_read_mentions",
+        "x_read_thread",
+        "x_read_replies",
+        "x_read_quotes",
+        "x_read_follow_graph",
+        "x_read_article",
+        "x_collect_posts",
+        "x_data_status",
+        "x_data_healthcheck",
     }
     assert tool_names == expected
 
@@ -101,6 +116,24 @@ def test_dm_send_schema(tools):
     assert schema["required"] == ["text"]
     assert schema["properties"]["user"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
     assert schema["properties"]["conversation"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+
+
+def test_read_tools_require_max_cost_usd(tools):
+    for name in [
+        "x_fetch_urls",
+        "x_read_user_posts",
+        "x_search_posts",
+        "x_read_owned_timeline",
+        "x_read_mentions",
+        "x_read_thread",
+        "x_read_replies",
+        "x_read_quotes",
+        "x_read_follow_graph",
+        "x_read_article",
+        "x_collect_posts",
+    ]:
+        tool = next(t for t in tools if t.name == name)
+        assert "max_cost_usd" in tool.inputSchema.get("required", []), f"{name} should require max_cost_usd"
 
 
 @pytest.fixture
