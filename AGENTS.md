@@ -167,22 +167,23 @@ Problem: `get_client`, `run_auth_operation`, `_ensure_required_scopes`, and all
 
 **DoD**: handshake verified, token validates, README complete.
 
-## Deployment notes (later session)
+## Deployment notes
 
-- Folder relocates to `/home/ubuntu/mcp/x-wing-mcp/`; everything is repo-relative
-  so it works unchanged.
-- At deployment: delete `~/.hermes/skills/x-wing/` and migrate tokens fully out of
-  `~/.hermes/.env`. This breaks `x_data`'s `read_owned_timeline` and `read_mentions`
-  (official_x-only routes) — decide then whether to re-point x_data official_x at the
-  `mcp_official` app in `~/.xurl`, or accept degradation. Do NOT leave a token copy behind.
-- Hermes wiring (later): add `mcp_servers.x-wing` stdio entry + wrapper script
-  following the `~/projects/x_mcp/scripts/x-data-mcp-hermes.sh` pattern.
+- The repo is located at `/home/ubuntu/mcp/x-wing/`; everything is repo-relative so it
+  works unchanged if relocated.
+- Tokens live only in `<repo_root>/.env`. No copy remains in `~/.hermes/.env` — the
+  `X_OAUTH2_*` / `X_*` entries there now belong to x_data's `mcp_official` app.
+- Skill deletion and x_data re-pointing were done in earlier sessions.
+- Hermes wiring is live:
+  - Wrapper script: `x-wing-mcp-hermes.sh` (in repo root, executable)
+  - `mcp_servers.x-wing` entries added to `~/.hermes/config.yaml` and
+    `~/.hermes/profiles/yan-cgo/config.yaml`
+  - Restart the Hermes gateway(s) for those profiles to load the new server.
 
 ## Deferred (out of scope)
 
-x-wing repo reconciliation, deployment wiring, skill deletion, x_data re-pointing,
-fresh dedicated OAuth grant, media/delete/unlike/unrepost tools, read tools,
-write pacing gate.
+x-wing repo reconciliation, OpenCode wiring, fresh dedicated OAuth grant,
+media/delete/unlike/unrepost tools, read tools, write pacing gate.
 
 ## Reference facts
 

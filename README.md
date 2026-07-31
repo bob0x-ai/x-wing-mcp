@@ -66,15 +66,22 @@ python -m pytest tests/ -q
 ## Verification results
 
 - `python -c "import x_client; print(x_client.env_path)"` → `<repo_root>/.env`
-- MCP handshake: `initialize` → `notifications/initialized` → `tools/list` returns exactly the 7 tools above.
-- Live token check via `_validate_access_token` against `users/me`: **valid** after refresh.
+- MCP handshake via the wrapper script: `initialize` → `notifications/initialized` →
+  `tools/list` returns exactly the 7 tools above.
+- Live token check via `_validate_access_token` against `users/me`: **valid** after refresh
+  (access token refreshed successfully, expires in 2h; `.env` and auth-state remain 0600).
 
 ## Deployment notes
 
 - This repo is repo-relative; it can be relocated without changes.
 - Tokens live only in `<repo_root>/.env`. Do not leave a copy in `~/.hermes/.env` after migration.
-- At deployment, delete `~/.hermes/skills/x-wing/` and remove the old `X_OAUTH2_*` / `X_*` entries from `~/.hermes/.env`.
-- Hermes wiring (later): add an `mcp_servers.x-wing` stdio entry pointing at a wrapper script in this repo, following the pattern in `~/projects/x_mcp/scripts/x-data-mcp-hermes.sh`.
+- The x-wing Hermes MCP server is wired into:
+  - `~/.hermes/config.yaml`
+  - `~/.hermes/profiles/yan-cgo/config.yaml`
+- Wrapper script: `x-wing-mcp-hermes.sh` (repo root, executable). It deliberately
+  does **not** source `~/.hermes/.env`; x-wing reads tokens exclusively from
+  `<repo_root>/.env`.
+- Restart the Hermes gateway(s) for those profiles to load the server.
 
 ## Deferred
 
