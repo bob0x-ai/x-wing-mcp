@@ -22,12 +22,13 @@ All paths must be repo-relative — nothing may depend on the folder's absolute 
 
 ### X app ownership (verified)
 
-- The `X_OAUTH2_*` tokens in `~/.hermes/.env` (client_id `UURMUEFD...pjaQ`)
-  belong to ONE app used by BOTH the x-wing skill AND `x_data`'s `official_x` provider.
-- `~/.xurl` holds a DIFFERENT app (`mcp_official`, client_id `R01OTU...`).
-- The x-wing skill is slated for deletion; this MCP **inherits the `UURMUEFD...` app**.
-  Scopes present and sufficient: `tweet.write like.write follows.write dm.write dm.read
-  offline.access`.
+- The `X_OAUTH2_*` tokens for the x-wing MCP live **only** in `<repo_root>/.env`
+  (client_id `UURMUEFD...pjaQ`). They are no longer stored in `~/.hermes/.env`.
+- `x_data`'s `official_x` provider has been re-pointed to the `mcp_official` app
+  (client_id `R01OTU...`) via `~/.hermes/.env`.
+- The x-wing skill is being deleted; this MCP **owns the `UURMUEFD...` app**.
+  Scopes present and sufficient: `offline.access dm.read tweet.write like.write
+  like.read users.read dm.write tweet.read bookmark.write follows.write`.
 
 ### Historical failure (2026-07-19)
 
