@@ -11,7 +11,7 @@ Usage:
     python oauth_setup.py
 
 Requirements:
-    - X_CLIENT_ID and X_CLIENT_SECRET set in ~/.hermes/.env
+    - X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET set in .env next to this script
     - requests library installed
     - Optional: qrcode library for QR code generation
     - Optional: pyperclip library for clipboard copy
@@ -24,7 +24,7 @@ Headless Flow:
     5. User copies the 7-digit PIN
     6. User pastes PIN in terminal
     7. Script exchanges PIN for tokens
-    8. Tokens are saved to ~/.hermes/.env
+    8. Tokens are saved to .env next to this script (override with X_WING_ENV_PATH)
 
 Troubleshooting:
     If you get "Something went wrong" when opening the URL:

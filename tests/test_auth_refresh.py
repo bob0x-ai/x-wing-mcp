@@ -29,6 +29,14 @@ def isolated_auth(monkeypatch, tmp_path):
     monkeypatch.setenv("X_ACCESS_TOKEN", "legacy_access")
     monkeypatch.setenv("X_OAUTH2_REFRESH_TOKEN", "old_refresh")
     monkeypatch.setenv("X_REFRESH_TOKEN", "legacy_refresh")
+    monkeypatch.setenv(
+        "X_OAUTH2_SCOPES",
+        "offline.access tweet.read tweet.write like.write users.read dm.write follows.write",
+    )
+    monkeypatch.setenv(
+        "X_SCOPES",
+        "offline.access tweet.read tweet.write like.write users.read dm.write follows.write",
+    )
     return env_path, state_path
 
 

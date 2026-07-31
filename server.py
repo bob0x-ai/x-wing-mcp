@@ -4,9 +4,7 @@
 Transport: stdio. The server never prints to stdout outside the MCP protocol.
 """
 
-import json
 import os
-import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,16 +13,21 @@ os.environ["X_WING_ENV_PATH"] = str(REPO_ROOT / ".env")
 
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
+from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 
 import x_client
 
 mcp = FastMCP("x-wing")
 
+# Application-specific MCP error codes (JSON-RPC server error range -32000..-32099)
+REPLY_POLICY_ERROR = -32001
+AUTH_ERROR = -32002
+THREAD_PARTIAL_ERROR = -32003
 
-def _tool_error(message: str, code: int = INTERNAL_ERROR) -> McpError:
+
+def _tool_error(message: str, code: int = INTERNAL_ERROR, data: Any = None) -> McpError:
     """Build an MCP tool error with a structured message."""
-    return McpError(ErrorData(code=code, message=message, data=None))
+    return McpError(ErrorData(code=code, message=message, data=data))
 
 
 def _api_result(result: dict) -> dict:
@@ -34,78 +37,98 @@ def _api_result(result: dict) -> dict:
     return {"success": True, **result}
 
 
+def _partial_data(exc: BaseException) -> Optional[dict]:
+    """Extract any partial thread post IDs carried by an exception."""
+    post_ids = getattr(exc, "post_ids", None)
+    if post_ids:
+        return {"partial_post_ids": list(post_ids)}
+    return None
+
+
+def _run_api(func):
+    """Execute an api_* core and map x-wing exceptions to MCP tool errors."""
+    try:
+        return func()
+    except x_client.ReplyPolicyError as exc:
+        raise _tool_error(
+            f"[REPLY_POLICY] {exc}",
+            code=REPLY_POLICY_ERROR,
+            data=_partial_data(exc),
+        ) from exc
+    except x_client.XWingThreadPartialError as exc:
+        raise _tool_error(
+            f"[THREAD_PARTIAL] {exc}",
+            code=THREAD_PARTIAL_ERROR,
+            data=_partial_data(exc),
+        ) from exc
+    except x_client.XWingValidationError as exc:
+        raise _tool_error(str(exc), code=INVALID_PARAMS) from exc
+    except x_client.XWingError as exc:
+        raise _tool_error(f"[AUTH] {exc}", code=AUTH_ERROR) from exc
+    except Exception as exc:
+        msg = str(exc)
+        if not msg:
+            msg = type(exc).__name__
+        partial = getattr(exc, "post_ids", None)
+        if partial:
+            msg = f"{msg} (partial post IDs created: {list(partial)})"
+        raise _tool_error(msg, code=INTERNAL_ERROR, data=_partial_data(exc)) from exc
+
+
 @mcp.tool()
 def post(text: str, reply_to: Optional[str] = None, quote: Optional[str] = None, media: Optional[str] = None) -> dict:
     """Create a new X post."""
-    try:
-        result = x_client.api_post(None, text=text, reply_to=reply_to, quote=quote, media=media)
-        return _api_result(result)
-    except x_client.ReplyPolicyError as exc:
-        raise _tool_error(f"[REPLY_POLICY] {exc}", code=INVALID_REQUEST) from exc
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code=INVALID_PARAMS) from exc
+    return _run_api(
+        lambda: _api_result(
+            x_client.api_post(text=text, reply_to=reply_to, quote=quote, media=media)
+        )
+    )
 
 
 @mcp.tool()
 def create_thread(texts: list[str]) -> dict:
     """Create a multi-post thread."""
-    try:
-        result = x_client.api_thread(None, texts=texts)
-        return _api_result(result)
-    except x_client.ReplyPolicyError as exc:
-        raise _tool_error(f"[REPLY_POLICY] {exc}", code=INVALID_REQUEST) from exc
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code=INVALID_PARAMS) from exc
+    return _run_api(lambda: _api_result(x_client.api_thread(texts=texts)))
 
 
 @mcp.tool()
 def like(post_id: str) -> dict:
     """Like a post."""
-    try:
-        result = x_client.api_like(None, post_id=post_id)
-        return _api_result(result)
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code="INVALID_REQUEST") from exc
+    return _run_api(lambda: _api_result(x_client.api_like(post_id=post_id)))
 
 
 @mcp.tool()
 def repost(post_id: str) -> dict:
     """Repost a post."""
-    try:
-        result = x_client.api_repost(None, post_id=post_id)
-        return _api_result(result)
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code="INVALID_REQUEST") from exc
+    return _run_api(lambda: _api_result(x_client.api_repost(post_id=post_id)))
 
 
 @mcp.tool()
 def follow(target_user_id: str) -> dict:
     """Follow a user by ID."""
-    try:
-        result = x_client.api_follow(None, target_user_id=target_user_id)
-        return _api_result(result)
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code="INVALID_REQUEST") from exc
+    return _run_api(lambda: _api_result(x_client.api_follow(target_user_id=target_user_id)))
 
 
 @mcp.tool()
 def unfollow(source_user_id: str, target_user_id: str) -> dict:
     """Unfollow a user by source and target IDs."""
-    try:
-        result = x_client.api_unfollow(None, source_user_id=source_user_id, target_user_id=target_user_id)
-        return _api_result(result)
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code="INVALID_REQUEST") from exc
+    return _run_api(
+        lambda: _api_result(
+            x_client.api_unfollow(
+                source_user_id=source_user_id, target_user_id=target_user_id
+            )
+        )
+    )
 
 
 @mcp.tool()
 def dm_send(text: str, user: Optional[str] = None, conversation: Optional[str] = None) -> dict:
     """Send a direct message to a user or conversation."""
-    try:
-        result = x_client.api_dm_send(None, user=user, conversation=conversation, text=text)
-        return _api_result(result)
-    except x_client.XWingError as exc:
-        raise _tool_error(f"[AUTH] {exc}", code="INVALID_REQUEST") from exc
+    return _run_api(
+        lambda: _api_result(
+            x_client.api_dm_send(user=user, conversation=conversation, text=text)
+        )
+    )
 
 
 def main() -> None:

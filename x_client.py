@@ -84,6 +84,20 @@ class XWingError(RuntimeError):
     """Raised when a CLI/MCP operation cannot proceed because of auth, scopes, or refresh failure."""
 
 
+class XWingValidationError(XWingError):
+    """Raised when user-provided arguments fail validation."""
+
+
+class XWingThreadPartialError(XWingError):
+    """Raised when a thread is partially published before a later post fails.
+
+    Carries the IDs of posts that were successfully created before the failure.
+    """
+    def __init__(self, message: str, post_ids: list[str]):
+        super().__init__(message)
+        self.post_ids = post_ids
+
+
 
 def _token_fingerprint(token: Optional[str]) -> Optional[str]:
     if not token:
@@ -143,11 +157,19 @@ def _write_auth_state(**updates: Any) -> None:
     state.update(updates)
     state["updated_at"] = time.time()
     AUTH_STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    try:
+        os.chmod(AUTH_STATE_PATH, 0o600)
+    except OSError:
+        pass
 
 
 @contextlib.contextmanager
 def _auth_lock():
     AUTH_LOCK_PATH.touch(exist_ok=True)
+    try:
+        os.chmod(AUTH_LOCK_PATH, 0o600)
+    except OSError:
+        pass
     with AUTH_LOCK_PATH.open("r+") as lock_file:
         try:
             import fcntl
@@ -582,7 +604,7 @@ def _response_to_dict(response: Any) -> dict:
     return result
 
 
-def api_post(client: Client, text: str, reply_to: Optional[str] = None, quote: Optional[str] = None, media: Optional[str] = None) -> dict:
+def api_post(text: str, reply_to: Optional[str] = None, quote: Optional[str] = None, media: Optional[str] = None) -> dict:
     """Create a single post. Returns a serializable dict with the API response."""
     body: dict[str, Any] = {"text": text}
     if reply_to:
@@ -600,10 +622,12 @@ def api_post(client: Client, text: str, reply_to: Optional[str] = None, quote: O
     return _response_to_dict(response)
 
 
-def api_thread(client: Client, texts: list[str]) -> dict:
+def api_thread(texts: list[str]) -> dict:
     """Create a thread (multi-post sequence). Returns {"post_ids": [...]}."""
     if not texts:
-        raise XWingError("At least one text is required for a thread.")
+        raise XWingValidationError("At least one text is required for a thread.")
+    if any(text is None or text == "" for text in texts):
+        raise XWingValidationError("Thread posts must be non-empty strings.")
 
     post_ids: list[str] = []
     previous_post_id: Optional[str] = None
@@ -620,7 +644,15 @@ def api_thread(client: Client, texts: list[str]) -> dict:
                 action_name="creating a thread",
             )
         except ReplyPolicyError as exc:
-            raise ReplyPolicyError(f"{exc} Target post ID: {previous_post_id}") from exc
+            partial_msg = f" Thread partially created: {post_ids}." if post_ids else ""
+            new_exc = ReplyPolicyError(f"{exc} Target post ID: {previous_post_id}.{partial_msg}")
+            if post_ids:
+                new_exc.post_ids = post_ids.copy()
+            raise new_exc from exc
+        except Exception as exc:
+            if post_ids:
+                exc.post_ids = post_ids.copy()
+            raise
 
         if response and response.data:
             post_id = response.data.id
@@ -628,15 +660,17 @@ def api_thread(client: Client, texts: list[str]) -> dict:
             previous_post_id = post_id
         else:
             errors = _response_to_dict(response).get("errors")
-            raise XWingError(
-                f"Failed to create post {i} in thread."
-                + (f" Errors: {errors}" if errors else "")
+            partial_msg = f" Thread partially created: {post_ids}." if post_ids else ""
+            raise XWingThreadPartialError(
+                f"Failed to create post {i} in thread.{partial_msg}"
+                + (f" Errors: {errors}" if errors else ""),
+                post_ids=post_ids.copy(),
             )
 
     return {"post_ids": post_ids}
 
 
-def api_like(client: Client, post_id: str) -> dict:
+def api_like(post_id: str) -> dict:
     """Like a post."""
     my_id = run_auth_operation(get_my_user_id)
     body = {"tweet_id": post_id}
@@ -648,7 +682,7 @@ def api_like(client: Client, post_id: str) -> dict:
     return _response_to_dict(response)
 
 
-def api_repost(client: Client, post_id: str) -> dict:
+def api_repost(post_id: str) -> dict:
     """Repost a post."""
     my_id = run_auth_operation(get_my_user_id)
     body = {"tweet_id": post_id}
@@ -660,7 +694,7 @@ def api_repost(client: Client, post_id: str) -> dict:
     return _response_to_dict(response)
 
 
-def api_follow(client: Client, target_user_id: str) -> dict:
+def api_follow(target_user_id: str) -> dict:
     """Follow a user."""
     my_id = run_auth_operation(get_my_user_id)
     body = {"target_user_id": target_user_id}
@@ -672,7 +706,7 @@ def api_follow(client: Client, target_user_id: str) -> dict:
     return _response_to_dict(response)
 
 
-def api_unfollow(client: Client, source_user_id: str, target_user_id: str) -> dict:
+def api_unfollow(source_user_id: str, target_user_id: str) -> dict:
     """Unfollow a user."""
     response = run_auth_operation(
         lambda c: c.users.unfollow_user(
@@ -685,14 +719,16 @@ def api_unfollow(client: Client, source_user_id: str, target_user_id: str) -> di
     return _response_to_dict(response)
 
 
-def api_dm_send(client: Client, *, user: Optional[str] = None, conversation: Optional[str] = None, text: str) -> dict:
+def api_dm_send(*, user: Optional[str] = None, conversation: Optional[str] = None, text: str) -> dict:
     """Send a direct message to a user or conversation."""
+    if user and conversation:
+        raise XWingValidationError("Specify either user or conversation, not both.")
     if user:
         participant_id = run_auth_operation(lambda c: resolve_user_id(c, user))
     elif conversation:
         participant_id = conversation
     else:
-        raise XWingError("Either user or conversation must be specified.")
+        raise XWingValidationError("Either user or conversation must be specified.")
 
     body = {"text": text}
     response = run_auth_operation(
@@ -709,7 +745,6 @@ def api_dm_send(client: Client, *, user: Optional[str] = None, conversation: Opt
 def cmd_post(args):
     """Create a new post."""
     result = api_post(
-        None,  # client created inside run_auth_operation
         text=args.text,
         reply_to=getattr(args, "reply_to", None),
         quote=getattr(args, "quote", None),
@@ -821,7 +856,6 @@ def cmd_dm_send(args):
     """Send a direct message."""
     try:
         result = api_dm_send(
-            None,
             user=getattr(args, "user", None),
             conversation=getattr(args, "conversation", None),
             text=args.text,
@@ -840,6 +874,9 @@ def cmd_dm_send(args):
                 print_json(result["errors"])
     except (ValueError, XWingError) as e:
         print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error sending message: {e}")
         sys.exit(1)
 
 
@@ -1022,7 +1059,7 @@ def cmd_search(args):
 
 def cmd_like(args):
     """Like a post."""
-    result = api_like(None, post_id=args.id)
+    result = api_like(post_id=args.id)
     if result.get("data"):
         print(f"Post {args.id} liked successfully!")
         if args.json:
@@ -1053,7 +1090,7 @@ def cmd_unlike(args):
 
 def cmd_repost(args):
     """Repost a post."""
-    result = api_repost(None, post_id=args.id)
+    result = api_repost(post_id=args.id)
     if result.get("data"):
         print(f"Post {args.id} reposted successfully!")
         if args.json:
@@ -1066,7 +1103,7 @@ def cmd_repost(args):
 
 def cmd_follow(args):
     """Follow a user."""
-    result = api_follow(None, target_user_id=args.target_user_id)
+    result = api_follow(target_user_id=args.target_user_id)
     if result.get("data"):
         print(f"Successfully followed user {args.target_user_id}!")
         data = result["data"]
@@ -1083,7 +1120,7 @@ def cmd_follow(args):
 
 def cmd_unfollow(args):
     """Unfollow a user."""
-    result = api_unfollow(None, source_user_id=args.source_user_id, target_user_id=args.target_user_id)
+    result = api_unfollow(source_user_id=args.source_user_id, target_user_id=args.target_user_id)
     if result.get("data"):
         print(f"Successfully unfollowed user {args.target_user_id}!")
         data = result["data"]
@@ -1240,15 +1277,34 @@ def cmd_thread(args):
         sys.exit(1)
 
     try:
-        result = api_thread(None, texts=args.text)
+        result = api_thread(texts=args.text)
     except ReplyPolicyError as exc:
         print(f"{exc}")
+        if getattr(exc, "post_ids", None):
+            print("\nThread partially created. Post IDs so far:")
+            for pid in exc.post_ids:
+                print(f"  - {pid}")
+        sys.exit(1)
+    except XWingThreadPartialError as exc:
+        print(f"Error: {exc}")
+        if exc.post_ids:
+            print("\nThread partially created. Post IDs so far:")
+            for pid in exc.post_ids:
+                print(f"  - {pid}")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        if getattr(exc, "post_ids", None):
+            print("\nThread partially created. Post IDs so far:")
+            for pid in exc.post_ids:
+                print(f"  - {pid}")
         sys.exit(1)
 
     post_ids = result.get("post_ids", [])
     print(f"\nThread created successfully with {len(post_ids)} posts!")
-    print(f"First post ID: {post_ids[0]}")
-    print(f"Last post ID: {post_ids[-1]}")
+    if post_ids:
+        print(f"First post ID: {post_ids[0]}")
+        print(f"Last post ID: {post_ids[-1]}")
     print("\nAll post IDs:")
     for pid in post_ids:
         print(f"  - {pid}")

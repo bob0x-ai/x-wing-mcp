@@ -1,9 +1,9 @@
 """Tests for the x-wing MCP server."""
 
 import asyncio
-import importlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,21 +15,19 @@ REPO_ROOT = Path(__file__).parent.parent
 
 def test_env_path_is_repo_local():
     """Importing x_client without X_WING_ENV_PATH points at repo .env."""
-    # Force a fresh import of x_client with the default env path.
-    env_var = "X_WING_ENV_PATH"
-    old_env = os.environ.get(env_var)
-    try:
-        os.environ.pop(env_var, None)
-        # Clear cached module to exercise module-level env resolution.
-        sys.modules.pop("x_client", None)
-        import x_client
-
-        assert x_client.env_path == REPO_ROOT / ".env"
-    finally:
-        if old_env is not None:
-            os.environ[env_var] = old_env
-        else:
-            os.environ.pop(env_var, None)
+    # Use a subprocess so the module re-import does not pollute this test process.
+    env = os.environ.copy()
+    env.pop("X_WING_ENV_PATH", None)
+    code = "import x_client; print(x_client.env_path)"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == REPO_ROOT / ".env"
 
 
 def test_server_env_path_override_is_set():
@@ -268,3 +266,75 @@ def test_refresh_failure_returns_tool_error_not_exit(mock_client):
 
     assert "AUTH" in str(exc_info.value)
     assert "refresh failed" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("tool_name,args", [
+    ("like", {"post_id": "123"}),
+    ("repost", {"post_id": "123"}),
+    ("follow", {"target_user_id": "456"}),
+    ("unfollow", {"source_user_id": "me", "target_user_id": "456"}),
+    ("dm_send", {"user": "@test", "text": "hi"}),
+])
+def test_write_tool_auth_error_returns_labeled_error(mock_client, tool_name, args):
+    """The five tools that previously used string error codes must return [AUTH] errors."""
+    import server
+    import x_client
+
+    with patch.object(
+        x_client,
+        f"api_{tool_name}",
+        side_effect=x_client.XWingError("auth failed"),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(server.mcp.call_tool(tool_name, args))
+
+    message = str(exc_info.value)
+    assert "[AUTH]" in message
+    assert "auth failed" in message
+    assert "validation error" not in message.lower()
+    assert "Input should be a valid integer" not in message
+
+
+def test_dm_send_validation_missing_recipient(mock_client):
+    """dm_send with neither user nor conversation returns a validation error, not [AUTH]."""
+    import server
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(server.mcp.call_tool("dm_send", {"text": "hi"}))
+
+    message = str(exc_info.value)
+    assert "[AUTH]" not in message
+    assert "user or conversation" in message
+
+
+def test_create_thread_validation_empty_text(mock_client):
+    """create_thread with an empty string text returns a validation error."""
+    import server
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(server.mcp.call_tool("create_thread", {"texts": [""]}))
+
+    assert "non-empty" in str(exc_info.value)
+
+
+def test_create_thread_partial_failure_returns_post_ids(mock_client):
+    """A thread that fails after the first post carries the partial IDs in the error."""
+    import server
+    import x_client
+
+    first_response = MagicMock()
+    first_response.data = MagicMock()
+    first_response.data.id = "post_0"
+
+    class SecondPostFails(Exception):
+        pass
+
+    mock_client.posts.create.side_effect = [first_response, SecondPostFails("boom")]
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(server.mcp.call_tool("create_thread", {"texts": ["a", "b"]}))
+
+    message = str(exc_info.value)
+    assert "post_0" in message
+    assert "partial" in message.lower() or "THREAD_PARTIAL" in message
+
