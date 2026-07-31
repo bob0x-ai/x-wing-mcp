@@ -15,7 +15,7 @@ repo-relative so it can be relocated unchanged.
 - Both codebases are vendored as copies inside this repo. The original sources in
   `/home/ubuntu/.hermes/skills/x-wing/` and `/home/ubuntu/projects/x_mcp/` are **not
   modified**.
-- The merged server uses one X OAuth 2.0 app (`UURMUEFD...pjaQ`). Its current grant
+- The merged server uses one X OAuth 2.0 app (`Zkh0NG1...`). Its current grant
   includes `tweet.read`, `users.read`, `like.read`, `dm.read`, and all write scopes.
   `follows.read` was added to the app and the token re-granted so `x_read_follow_graph`
   can fall back to `official_x`.
@@ -118,5 +118,5 @@ x-wing repo reconciliation, OpenCode wiring, media/delete/unlike/unrepost tools,
 
 - Live x-wing source: `/home/ubuntu/.hermes/skills/x-wing/scripts/x_client.py`
 - Live x_data source: `/home/ubuntu/projects/x_mcp/src/`
-- Token app: x-wing app `UURMUEFD...pjaQ` (read + write scopes)
+- Token app: x-wing app `Zkh0NG1...` (read + write scopes)
 - Python: 3.11.15; `uv`/`uvx` available at `~/.local/bin`
