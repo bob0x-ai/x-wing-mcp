@@ -541,6 +541,15 @@ def print_json(data):
 from unittest.mock import Mock
 
 
+def _mock_to_dict(obj: Any) -> dict:
+    """Extract explicitly-set public attributes from a unittest.mock Mock/MagicMock."""
+    return {
+        key: value
+        for key, value in obj.__dict__.items()
+        if not key.startswith("_")
+    }
+
+
 def _response_to_dict(response: Any) -> dict:
     """Convert an SDK response object to a plain dict for return via MCP/CLI wrappers."""
     result: dict[str, Any] = {}
@@ -549,8 +558,7 @@ def _response_to_dict(response: Any) -> dict:
     if hasattr(response, "data"):
         data = response.data
         if isinstance(data, Mock):
-            # Preserve MagicMock objects so test fixtures behave predictably.
-            result["data"] = data
+            result["data"] = _mock_to_dict(data)
         elif hasattr(data, "model_dump"):
             result["data"] = data.model_dump()
         elif hasattr(data, "__dict__"):
@@ -562,7 +570,7 @@ def _response_to_dict(response: Any) -> dict:
     if hasattr(response, "errors") and response.errors:
         errors = response.errors
         if isinstance(errors, Mock):
-            result["errors"] = errors
+            result["errors"] = _mock_to_dict(errors)
         elif hasattr(errors, "model_dump"):
             result["errors"] = errors.model_dump()
         elif hasattr(errors, "__dict__"):
