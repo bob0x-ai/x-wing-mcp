@@ -1,4 +1,4 @@
-"""Tests for the x-actions MCP server."""
+"""Tests for the x-wing MCP server."""
 
 import asyncio
 import importlib

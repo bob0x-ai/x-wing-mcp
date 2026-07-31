@@ -1,5 +1,5 @@
 [project]
-name = "x-actions-mcp"
+name = "x-wing-mcp"
 version = "0.1.0"
 description = "Write-only X (Twitter) MCP server exposing a subset of x-wing commands"
 requires-python = ">=3.11"

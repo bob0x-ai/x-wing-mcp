@@ -1,10 +1,10 @@
-# AGENTS.md — x-actions-mcp: X write-capable MCP server (vendored from x-wing)
+# AGENTS.md — x-wing-mcp: X write-capable MCP server (vendored from x-wing)
 
 ## Objective
 
 Turn the x-wing X/Twitter skill into a **stdio MCP server** exposing a **write-only
 subset** of its commands. Build in this folder (currently
-`/home/ubuntu/projects/x-actions-mcp`, will be relocated to `/home/ubuntu/mcp/x-actions-mcp/`).
+`/home/ubuntu/projects/x-wing-mcp`, will be relocated to `/home/ubuntu/mcp/x-wing-mcp/`).
 All paths must be repo-relative — nothing may depend on the folder's absolute location.
 
 ## Background
@@ -54,7 +54,7 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
 ├── .gitignore              # from skill (ignores .env, .x-wing-auth-state.*, __pycache__)
 ├── .env.example            # committed template, NO secrets
 ├── .env                    # real tokens, gitignored, 0600
-├── pyproject.toml          # name x-actions-mcp; deps: mcp>=1.0, xdk, python-dotenv, requests
+├── pyproject.toml          # name x-wing-mcp; deps: mcp>=1.0, xdk, python-dotenv, requests
 ├── README.md               # tool table, provisioning, deployment notes
 ├── x_client.py             # VENDORED + PATCHED
 ├── oauth_setup.py          # VENDORED + PATCHED
@@ -129,7 +129,7 @@ Problem: `get_client`, `run_auth_operation`, `_ensure_required_scopes`, and all
 
 ## Milestone 3 — MCP server (`server.py`)
 
-- FastMCP, stdio transport, name `x-actions`.
+- FastMCP, stdio transport, name `x-wing`.
 - Before importing `x_client`: `os.environ["X_WING_ENV_PATH"] = str(REPO_ROOT / ".env")`.
 - Register **7 tools** with typed schemas:
   - `post(text, reply_to=None, quote=None, media=None)`
@@ -168,13 +168,13 @@ Problem: `get_client`, `run_auth_operation`, `_ensure_required_scopes`, and all
 
 ## Deployment notes (later session)
 
-- Folder relocates to `/home/ubuntu/mcp/x-actions-mcp/`; everything is repo-relative
+- Folder relocates to `/home/ubuntu/mcp/x-wing-mcp/`; everything is repo-relative
   so it works unchanged.
 - At deployment: delete `~/.hermes/skills/x-wing/` and migrate tokens fully out of
   `~/.hermes/.env`. This breaks `x_data`'s `read_owned_timeline` and `read_mentions`
   (official_x-only routes) — decide then whether to re-point x_data official_x at the
   `mcp_official` app in `~/.xurl`, or accept degradation. Do NOT leave a token copy behind.
-- Hermes wiring (later): add `mcp_servers.x-actions` stdio entry + wrapper script
+- Hermes wiring (later): add `mcp_servers.x-wing` stdio entry + wrapper script
   following the `~/projects/x_mcp/scripts/x-data-mcp-hermes.sh` pattern.
 
 ## Deferred (out of scope)

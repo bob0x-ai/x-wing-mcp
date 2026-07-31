@@ -19,7 +19,7 @@ from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
 
 import x_client
 
-mcp = FastMCP("x-actions")
+mcp = FastMCP("x-wing")
 
 
 def _tool_error(message: str, code: int = INTERNAL_ERROR) -> McpError:
