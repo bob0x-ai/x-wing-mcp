@@ -151,7 +151,7 @@ def test_auth_wrapper_rejects_missing_write_scope_before_retry(isolated_auth, mo
 
     operation = MagicMock()
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(x_client.XWingError):
         x_client.run_auth_operation(
             operation,
             required_scopes={"tweet.write"},

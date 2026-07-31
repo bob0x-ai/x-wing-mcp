@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from x_client import get_client, get_my_user_id, cmd_post, cmd_delete, cmd_get, cmd_search, cmd_thread, cmd_upload_media, ReplyPolicyError
+from x_client import get_client, get_my_user_id, cmd_post, cmd_delete, cmd_get, cmd_search, cmd_thread, cmd_upload_media, ReplyPolicyError, XWingError
 
 
 # VCR configuration for recording/replaying HTTP requests
@@ -256,13 +256,13 @@ class TestGetClient:
                 )
     
     def test_get_client_missing_credentials(self, capsys):
-        """Test that get_client exits when OAuth 2.0 credentials are missing."""
+        """Test that get_client raises XWingError when OAuth 2.0 credentials are missing."""
         with patch.dict('os.environ', {}, clear=True):
-            with pytest.raises(SystemExit):
+            with pytest.raises(XWingError):
                 get_client()
     
     def test_get_client_missing_access_token_for_user_context(self):
-        """Test that get_client exits when access token missing for user-context ops."""
+        """Test that get_client raises XWingError when access token missing for user-context ops."""
         with patch.dict('os.environ', {
             'X_OAUTH2_CLIENT_ID': 'test_client_id',
             'X_OAUTH2_CLIENT_SECRET': 'test_client_secret',
@@ -270,7 +270,7 @@ class TestGetClient:
             'X_OAUTH2_ACCESS_TOKEN': '',
             'X_ACCESS_TOKEN': '',
         }, clear=True):
-            with pytest.raises(SystemExit):
+            with pytest.raises(XWingError):
                 get_client(use_app_only=False)
 
 

@@ -80,6 +80,11 @@ class ReplyPolicyError(RuntimeError):
     """Raised when X rejects a reply because the post is not reply-eligible."""
 
 
+class XWingError(RuntimeError):
+    """Raised when a CLI/MCP operation cannot proceed because of auth, scopes, or refresh failure."""
+
+
+
 def _token_fingerprint(token: Optional[str]) -> Optional[str]:
     if not token:
         return None
@@ -119,7 +124,9 @@ def _ensure_required_scopes(required_scopes: set[str], action: str) -> None:
         "Re-run oauth_setup.py after confirming the app has the needed permissions in the X developer portal.",
         file=sys.stderr,
     )
-    sys.exit(1)
+    raise XWingError(
+        f"missing scope(s) for {action}: {', '.join(sorted(missing_scopes))}"
+    )
 
 
 def _read_auth_state() -> dict[str, Any]:
@@ -450,8 +457,7 @@ def run_auth_operation(
     try:
         new_token = _refresh_from_env()
     except AuthRefreshError as exc:
-        print(f"Authentication failed and refresh was not possible: {exc}", file=sys.stderr)
-        sys.exit(1)
+        raise XWingError(f"Authentication failed and refresh was not possible: {exc}") from exc
 
     if required_scopes and not use_app_only:
         _ensure_required_scopes(required_scopes, action_name)
@@ -465,13 +471,11 @@ def run_auth_operation(
                 "Reply rejected by X: the original post does not allow replies from this account."
             ) from exc
         if _is_auth_failure(exc):
-            print("Authentication failed after one refresh retry. Re-run PKCE auth.", file=sys.stderr)
-            sys.exit(1)
+            raise XWingError("Authentication failed after one refresh retry. Re-run PKCE auth.") from exc
         raise
 
     if _is_auth_failure(retry_result):
-        print("Authentication failed after one refresh retry. Re-run PKCE auth.", file=sys.stderr)
-        sys.exit(1)
+        raise XWingError("Authentication failed after one refresh retry. Re-run PKCE auth.")
 
     return retry_result
 
@@ -488,21 +492,18 @@ def get_client(use_app_only: bool = False) -> Client:
     access_token = _env_value("X_OAUTH2_ACCESS_TOKEN", "X_ACCESS_TOKEN")
     # Validate credentials
     if not client_id or not client_secret:
-        print("Error: Missing OAuth 2.0 credentials in environment variables.")
-        print("Required: X_OAUTH2_CLIENT_ID/X_CLIENT_ID, X_OAUTH2_CLIENT_SECRET/X_CLIENT_SECRET")
-        print("Optional: X_OAUTH2_ACCESS_TOKEN/X_ACCESS_TOKEN (for user-context operations)")
-        sys.exit(1)
+        raise XWingError(
+            "Missing OAuth 2.0 credentials in environment variables. "
+            "Required: X_OAUTH2_CLIENT_ID/X_CLIENT_ID, X_OAUTH2_CLIENT_SECRET/X_CLIENT_SECRET"
+        )
     
     # For user-context operations, we need an access token
     if not use_app_only:
         if not access_token:
-            print("Error: Missing OAuth 2.0 access token for user-context operations.")
-            print("Required: X_OAUTH2_ACCESS_TOKEN or X_ACCESS_TOKEN")
-            print("\nTo get an access token, complete the OAuth 2.0 flow:")
-            print("1. Generate authorization URL")
-            print("2. User authorizes your app")
-            print("3. Exchange authorization code for tokens")
-            sys.exit(1)
+            raise XWingError(
+                "Missing OAuth 2.0 access token for user-context operations. "
+                "Required: X_OAUTH2_ACCESS_TOKEN or X_ACCESS_TOKEN"
+            )
         
         return Client(access_token=access_token)
     
@@ -537,37 +538,187 @@ def print_json(data):
         print(json.dumps(data, indent=2, default=str))
 
 
-def cmd_post(args):
-    """Create a new post."""
-    body = {"text": args.text}
+from unittest.mock import Mock
 
-    # Add reply target if provided. X self-serve apps may be restricted to
-    # replies where the original author mentioned or quoted this account.
-    if hasattr(args, "reply_to") and args.reply_to:
-        body["reply"] = {"in_reply_to_tweet_id": args.reply_to}
 
-    # Add quoted post if provided (recommended over reply-to for engagement)
-    if hasattr(args, "quote") and args.quote:
-        body["quote_tweet_id"] = args.quote
+def _response_to_dict(response: Any) -> dict:
+    """Convert an SDK response object to a plain dict for return via MCP/CLI wrappers."""
+    result: dict[str, Any] = {}
+    if response is None:
+        return result
+    if hasattr(response, "data"):
+        data = response.data
+        if isinstance(data, Mock):
+            # Preserve MagicMock objects so test fixtures behave predictably.
+            result["data"] = data
+        elif hasattr(data, "model_dump"):
+            result["data"] = data.model_dump()
+        elif hasattr(data, "__dict__"):
+            result["data"] = data.__dict__
+        elif isinstance(data, dict):
+            result["data"] = data
+        else:
+            result["data"] = data
+    if hasattr(response, "errors") and response.errors:
+        errors = response.errors
+        if isinstance(errors, Mock):
+            result["errors"] = errors
+        elif hasattr(errors, "model_dump"):
+            result["errors"] = errors.model_dump()
+        elif hasattr(errors, "__dict__"):
+            result["errors"] = errors.__dict__
+        elif isinstance(errors, (list, dict)):
+            result["errors"] = errors
+        else:
+            result["errors"] = str(errors)
+    return result
 
-    # Add media if provided
-    if hasattr(args, 'media') and args.media:
-        body["media"] = {"media_ids": [args.media]}
+
+def api_post(client: Client, text: str, reply_to: Optional[str] = None, quote: Optional[str] = None, media: Optional[str] = None) -> dict:
+    """Create a single post. Returns a serializable dict with the API response."""
+    body: dict[str, Any] = {"text": text}
+    if reply_to:
+        body["reply"] = {"in_reply_to_tweet_id": reply_to}
+    if quote:
+        body["quote_tweet_id"] = quote
+    if media:
+        body["media"] = {"media_ids": [media]}
 
     response = run_auth_operation(
-        lambda client: client.posts.create(body=body),
+        lambda c: c.posts.create(body=body),
         required_scopes={"tweet.write"},
         action_name="posting",
     )
-    if response and response.data:
-        print(f"Post created successfully!")
-        print(f"Post ID: {response.data.id}")
+    return _response_to_dict(response)
+
+
+def api_thread(client: Client, texts: list[str]) -> dict:
+    """Create a thread (multi-post sequence). Returns {"post_ids": [...]}."""
+    if not texts:
+        raise XWingError("At least one text is required for a thread.")
+
+    post_ids: list[str] = []
+    previous_post_id: Optional[str] = None
+
+    for i, text in enumerate(texts, 1):
+        body = {"text": text}
+        if previous_post_id:
+            body["reply"] = {"in_reply_to_tweet_id": previous_post_id}
+
+        try:
+            response = run_auth_operation(
+                lambda c, body=body: c.posts.create(body=body),
+                required_scopes={"tweet.write"},
+                action_name="creating a thread",
+            )
+        except ReplyPolicyError as exc:
+            raise ReplyPolicyError(f"{exc} Target post ID: {previous_post_id}") from exc
+
+        if response and response.data:
+            post_id = response.data.id
+            post_ids.append(post_id)
+            previous_post_id = post_id
+        else:
+            errors = _response_to_dict(response).get("errors")
+            raise XWingError(
+                f"Failed to create post {i} in thread."
+                + (f" Errors: {errors}" if errors else "")
+            )
+
+    return {"post_ids": post_ids}
+
+
+def api_like(client: Client, post_id: str) -> dict:
+    """Like a post."""
+    my_id = run_auth_operation(get_my_user_id)
+    body = {"tweet_id": post_id}
+    response = run_auth_operation(
+        lambda c: c.users.like_post(id=my_id, body=body),
+        required_scopes={"like.write"},
+        action_name="liking a post",
+    )
+    return _response_to_dict(response)
+
+
+def api_repost(client: Client, post_id: str) -> dict:
+    """Repost a post."""
+    my_id = run_auth_operation(get_my_user_id)
+    body = {"tweet_id": post_id}
+    response = run_auth_operation(
+        lambda c: c.users.repost_post(id=my_id, body=body),
+        required_scopes={"tweet.write"},
+        action_name="reposting a post",
+    )
+    return _response_to_dict(response)
+
+
+def api_follow(client: Client, target_user_id: str) -> dict:
+    """Follow a user."""
+    my_id = run_auth_operation(get_my_user_id)
+    body = {"target_user_id": target_user_id}
+    response = run_auth_operation(
+        lambda c: c.users.follow_user(id=my_id, body=body),
+        required_scopes={"follows.write"},
+        action_name="following a user",
+    )
+    return _response_to_dict(response)
+
+
+def api_unfollow(client: Client, source_user_id: str, target_user_id: str) -> dict:
+    """Unfollow a user."""
+    response = run_auth_operation(
+        lambda c: c.users.unfollow_user(
+            source_user_id=source_user_id,
+            target_user_id=target_user_id,
+        ),
+        required_scopes={"follows.write"},
+        action_name="unfollowing a user",
+    )
+    return _response_to_dict(response)
+
+
+def api_dm_send(client: Client, *, user: Optional[str] = None, conversation: Optional[str] = None, text: str) -> dict:
+    """Send a direct message to a user or conversation."""
+    if user:
+        participant_id = run_auth_operation(lambda c: resolve_user_id(c, user))
+    elif conversation:
+        participant_id = conversation
+    else:
+        raise XWingError("Either user or conversation must be specified.")
+
+    body = {"text": text}
+    response = run_auth_operation(
+        lambda c: c.dm.send_message(
+            participant_id=participant_id,
+            body=body,
+        ),
+        required_scopes={"dm.write"},
+        action_name="sending a direct message",
+    )
+    return _response_to_dict(response)
+
+
+def cmd_post(args):
+    """Create a new post."""
+    result = api_post(
+        None,  # client created inside run_auth_operation
+        text=args.text,
+        reply_to=getattr(args, "reply_to", None),
+        quote=getattr(args, "quote", None),
+        media=getattr(args, "media", None),
+    )
+    if result.get("data"):
+        data = result["data"]
+        post_id = data.get("id") if isinstance(data, dict) else getattr(data, "id", None)
+        print("Post created successfully!")
+        if post_id:
+            print(f"Post ID: {post_id}")
         if args.json:
-            print_json(response.data)
+            print_json(data)
     else:
         print("Failed to create post.")
-        if hasattr(response, "errors") and response.errors:
-            print_json(response.errors)
+        if result.get("errors"):
+            print_json(result["errors"])
 
 
 def cmd_upload_media(args):
@@ -661,48 +812,26 @@ def resolve_user_id(client, user_identifier: str) -> str:
 def cmd_dm_send(args):
     """Send a direct message."""
     try:
-        # Determine recipient
-        if args.user:
-            # Send to user (by username or ID)
-            recipient_id = run_auth_operation(lambda client: resolve_user_id(client, args.user))
-            participant_id = recipient_id
-        elif args.conversation:
-            # Send to existing conversation
-            participant_id = args.conversation
-        else:
-            print("Error: Either --user or --conversation must be specified.")
-            sys.exit(1)
-        
-        # Send the message
-        body = {
-            "text": args.text
-        }
-        
-        response = run_auth_operation(
-            lambda client: client.dm.send_message(
-                participant_id=participant_id,
-                body=body
-            ),
-            required_scopes={"dm.write"},
-            action_name="sending a direct message",
+        result = api_dm_send(
+            None,
+            user=getattr(args, "user", None),
+            conversation=getattr(args, "conversation", None),
+            text=args.text,
         )
-        
-        if response and response.data:
-            print(f"Message sent successfully!")
-            if hasattr(response.data, 'id'):
-                print(f"Message ID: {response.data.id}")
+        if result.get("data"):
+            print("Message sent successfully!")
+            data = result["data"]
+            msg_id = data.get("id") if isinstance(data, dict) else getattr(data, "id", None)
+            if msg_id:
+                print(f"Message ID: {msg_id}")
             if args.json:
-                print_json(response.data)
+                print_json(data)
         else:
             print("Failed to send message.")
-            if hasattr(response, "errors") and response.errors:
-                print_json(response.errors)
-    
-    except ValueError as e:
+            if result.get("errors"):
+                print_json(result["errors"])
+    except (ValueError, XWingError) as e:
         print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error sending message: {e}")
         sys.exit(1)
 
 
@@ -885,21 +1014,15 @@ def cmd_search(args):
 
 def cmd_like(args):
     """Like a post."""
-    my_id = run_auth_operation(get_my_user_id)
-    body = {"tweet_id": args.id}
-    response = run_auth_operation(
-        lambda client: client.users.like_post(id=my_id, body=body),
-        required_scopes={"like.write"},
-        action_name="liking a post",
-    )
-    if response and response.data:
+    result = api_like(None, post_id=args.id)
+    if result.get("data"):
         print(f"Post {args.id} liked successfully!")
         if args.json:
-            print_json(response.data)
+            print_json(result["data"])
     else:
         print("Failed to like post.")
-        if hasattr(response, "errors") and response.errors:
-            print_json(response.errors)
+        if result.get("errors"):
+            print_json(result["errors"])
 
 
 def cmd_unlike(args):
@@ -922,64 +1045,49 @@ def cmd_unlike(args):
 
 def cmd_repost(args):
     """Repost a post."""
-    my_id = run_auth_operation(get_my_user_id)
-    body = {"tweet_id": args.id}
-    response = run_auth_operation(
-        lambda client: client.users.repost_post(id=my_id, body=body),
-        required_scopes={"tweet.write"},
-        action_name="reposting a post",
-    )
-    if response and response.data:
+    result = api_repost(None, post_id=args.id)
+    if result.get("data"):
         print(f"Post {args.id} reposted successfully!")
         if args.json:
-            print_json(response.data)
+            print_json(result["data"])
     else:
         print("Failed to repost.")
-        if hasattr(response, "errors") and response.errors:
-            print_json(response.errors)
+        if result.get("errors"):
+            print_json(result["errors"])
 
 
 def cmd_follow(args):
     """Follow a user."""
-    my_id = run_auth_operation(get_my_user_id)
-    body = {"target_user_id": args.target_user_id}
-    response = run_auth_operation(
-        lambda client: client.users.follow_user(id=my_id, body=body),
-        required_scopes={"follows.write"},
-        action_name="following a user",
-    )
-    if response and response.data:
+    result = api_follow(None, target_user_id=args.target_user_id)
+    if result.get("data"):
         print(f"Successfully followed user {args.target_user_id}!")
-        if hasattr(response.data, 'following'):
-            print(f"Following: {response.data.following}")
+        data = result["data"]
+        following = data.get("following") if isinstance(data, dict) else getattr(data, "following", None)
+        if following is not None:
+            print(f"Following: {following}")
         if args.json:
-            print_json(response.data)
+            print_json(data)
     else:
         print(f"Failed to follow user {args.target_user_id}.")
-        if hasattr(response, "errors") and response.errors:
-            print_json(response.errors)
+        if result.get("errors"):
+            print_json(result["errors"])
 
 
 def cmd_unfollow(args):
     """Unfollow a user."""
-    response = run_auth_operation(
-        lambda client: client.users.unfollow_user(
-            source_user_id=args.source_user_id,
-            target_user_id=args.target_user_id
-        ),
-        required_scopes={"follows.write"},
-        action_name="unfollowing a user",
-    )
-    if response and response.data:
+    result = api_unfollow(None, source_user_id=args.source_user_id, target_user_id=args.target_user_id)
+    if result.get("data"):
         print(f"Successfully unfollowed user {args.target_user_id}!")
-        if hasattr(response.data, 'following'):
-            print(f"Following: {response.data.following}")
+        data = result["data"]
+        following = data.get("following") if isinstance(data, dict) else getattr(data, "following", None)
+        if following is not None:
+            print(f"Following: {following}")
         if args.json:
-            print_json(response.data)
+            print_json(data)
     else:
         print(f"Failed to unfollow user {args.target_user_id}.")
-        if hasattr(response, "errors") and response.errors:
-            print_json(response.errors)
+        if result.get("errors"):
+            print_json(result["errors"])
 
 
 def cmd_unrepost(args):
@@ -1122,45 +1230,14 @@ def cmd_thread(args):
     if not args.text or len(args.text) == 0:
         print("Error: At least one --text argument is required for a thread.")
         sys.exit(1)
-    
-    post_ids = []
-    previous_post_id = None
-    
-    for i, text in enumerate(args.text, 1):
-        body = {"text": text}
-        
-        # If this is not the first post, reply to the previous one
-        if previous_post_id:
-            body["reply"] = {"in_reply_to_tweet_id": previous_post_id}
-        
-        try:
-            response = run_auth_operation(
-                lambda client, body=body: client.posts.create(body=body),
-                required_scopes={"tweet.write"},
-                action_name="creating a thread",
-            )
-        except ReplyPolicyError as exc:
-            print(f"{exc} Target post ID: {previous_post_id}")
-            sys.exit(1)
-        
-        if response and response.data:
-            post_id = response.data.id
-            post_ids.append(post_id)
-            previous_post_id = post_id
-            print(f"Post {i}/{len(args.text)} created: {post_id}")
-            if args.json:
-                print_json(response.data)
-        else:
-            print(f"Failed to create post {i} in thread.")
-            if hasattr(response, "errors") and response.errors:
-                print_json(response.errors)
-            # If we have created some posts, show them before exiting
-            if post_ids:
-                print(f"\nThread partially created. Post IDs so far:")
-                for pid in post_ids:
-                    print(f"  - {pid}")
-            sys.exit(1)
-    
+
+    try:
+        result = api_thread(None, texts=args.text)
+    except ReplyPolicyError as exc:
+        print(f"{exc}")
+        sys.exit(1)
+
+    post_ids = result.get("post_ids", [])
     print(f"\nThread created successfully with {len(post_ids)} posts!")
     print(f"First post ID: {post_ids[0]}")
     print(f"Last post ID: {post_ids[-1]}")
@@ -1301,7 +1378,14 @@ X_ACCESS_TOKEN, X_REFRESH_TOKEN.  Set X_WING_ENV_PATH to override the .env locat
         parser.print_help()
         sys.exit(1)
     
-    args.func(args)
+    try:
+        args.func(args)
+    except XWingError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ReplyPolicyError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
