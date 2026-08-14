@@ -164,6 +164,19 @@ def claim_run(
                 conn.execute("COMMIT")
                 return True, None
 
+        # Retry a failed run: nothing was stored, so re-fetching the same
+        # day is safe and prevents analytics gaps from transient errors.
+        if existing and existing.get("status") == "error":
+            reclaimed = conn.execute(
+                "UPDATE collection_runs SET started_at = ?, finished_at = NULL,"
+                " status = 'running', post_count = NULL, api_call_count = NULL"
+                " WHERE collection_date = ? AND status = 'error'",
+                (_iso(now), collection_date),
+            )
+            if reclaimed.rowcount == 1:
+                conn.execute("COMMIT")
+                return True, None
+
         conn.execute("COMMIT")
         return False, existing
     except Exception:

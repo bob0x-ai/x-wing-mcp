@@ -7,6 +7,7 @@ __pycache__/
 .env
 *.log
 logs/
+data/
 .DS_Store
 .x-wing-auth-state.json
 .x-wing-auth-state.lock

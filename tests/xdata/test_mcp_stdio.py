@@ -34,6 +34,7 @@ def test_mcp_stdio_lists_tools_and_calls_status():
                 "x_collect_posts",
                 "x_data_status",
                 "x_data_healthcheck",
+                "x_usage_stats",
             }
             for tool in tools.values():
                 schema = getattr(tool, "input_schema", None)
@@ -44,17 +45,17 @@ def test_mcp_stdio_lists_tools_and_calls_status():
 
             status = await session.call_tool("x_data_status", {})
 
-            assert status.isError is False
-            assert status.structuredContent["status"] == "ok"
-            assert status.structuredContent["server"] == "x-data"
-            assert "summary" in status.structuredContent
-            assert "details" not in status.structuredContent
+            assert status.is_error is False
+            assert status.structured_content["status"] == "ok"
+            assert status.structured_content["server"] == "x-data"
+            assert "summary" in status.structured_content
+            assert "details" not in status.structured_content
 
             health = await session.call_tool("x_data_healthcheck", {"mode": "basic"})
 
-            assert health.isError is False
-            assert health.structuredContent["status"] == "ok"
-            assert health.structuredContent["server"] == "x-data"
-            assert "summary" in health.structuredContent
+            assert health.is_error is False
+            assert health.structured_content["status"] == "ok"
+            assert health.structured_content["server"] == "x-data"
+            assert "summary" in health.structured_content
 
     anyio.run(run)

@@ -84,6 +84,8 @@ def test_tools_count_and_names(tool_names):
         "x_data_status",
         "x_data_healthcheck",
         "x_usage_stats",
+        # owned-account analytics (read-only, local store)
+        "x_read_own_analytics",
     }
     assert tool_names == expected
 
@@ -165,7 +167,7 @@ def test_post_handler_success(mock_client):
 
     result = asyncio.run(server.mcp.call_tool("post", {"text": "hello"}))
     # FastMCP returns a list of TextContent; unwrap for the JSON payload.
-    payload = json.loads(result[0].text)
+    payload = json.loads(result.content[0].text)
     assert payload["success"] is True
     assert payload["data"]["id"] == "post_123"
 
@@ -185,7 +187,7 @@ def test_create_thread_handler_success(mock_client):
     mock_client.posts.create.side_effect = side_effect
 
     result = asyncio.run(server.mcp.call_tool("create_thread", {"texts": ["a", "b"]}))
-    payload = json.loads(result[0].text)
+    payload = json.loads(result.content[0].text)
     assert payload["success"] is True
     assert payload["post_ids"] == ["post_0", "post_1"]
 
@@ -200,7 +202,7 @@ def test_like_handler_success(mock_client):
         mock_client.users.like_post.return_value = mock_response
 
         result = asyncio.run(server.mcp.call_tool("like", {"post_id": "123"}))
-        payload = json.loads(result[0].text)
+        payload = json.loads(result.content[0].text)
         assert payload["success"] is True
         assert payload["data"]["liked"] is True
 
@@ -215,7 +217,7 @@ def test_repost_handler_success(mock_client):
         mock_client.users.repost_post.return_value = mock_response
 
         result = asyncio.run(server.mcp.call_tool("repost", {"post_id": "123"}))
-        payload = json.loads(result[0].text)
+        payload = json.loads(result.content[0].text)
         assert payload["success"] is True
         assert payload["data"]["reposted"] is True
 
@@ -230,7 +232,7 @@ def test_follow_handler_success(mock_client):
         mock_client.users.follow_user.return_value = mock_response
 
         result = asyncio.run(server.mcp.call_tool("follow", {"target_user_id": "456"}))
-        payload = json.loads(result[0].text)
+        payload = json.loads(result.content[0].text)
         assert payload["success"] is True
         assert payload["data"]["following"] is True
 
@@ -246,7 +248,7 @@ def test_unfollow_handler_success(mock_client):
     result = asyncio.run(server.mcp.call_tool(
         "unfollow", {"source_user_id": "me", "target_user_id": "456"}
     ))
-    payload = json.loads(result[0].text)
+    payload = json.loads(result.content[0].text)
     assert payload["success"] is True
     assert payload["data"]["following"] is False
 
@@ -263,7 +265,7 @@ def test_dm_send_handler_success(mock_client):
         result = asyncio.run(server.mcp.call_tool(
             "dm_send", {"user": "@test", "text": "hi"}
         ))
-        payload = json.loads(result[0].text)
+        payload = json.loads(result.content[0].text)
         assert payload["success"] is True
         assert payload["data"]["id"] == "msg_123"
 

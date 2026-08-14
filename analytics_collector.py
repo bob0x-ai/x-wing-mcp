@@ -10,17 +10,22 @@ Designed to run once per UTC day from an OPERATOR-INSTALLED SYSTEM CRON JOB.
 Not from Hermes cron, not from any agent harness scheduler. See README
 §Analytics collector.
 
-Cost discipline: one run costs exactly 2 X API calls (one
-``GET /2/users/me``, one ``GET /2/users/:id/tweets`` page of up to 100
+Cost discipline: one run costs exactly 2 X API calls (one free
+``GET /2/users/me``, one paid ``GET /2/users/:id/tweets`` page of up to 100
 posts). The real call count is recorded in ``collection_runs.api_call_count``
-and every HTTP request also lands in the x_usage ledger via the existing
-response hook.
+and every request also lands in the x_usage ledger.
 
 Auth: reuses x_client's canonical OAuth path (ensure_access_token /
-run_auth_operation). No separate credential handling.
+_refresh_from_env) for token storage and refresh — no separate credential
+handling. HTTP is plain ``requests`` against api.x.com (the same pattern as
+``x_client._validate_access_token``) because the vendored xdk response
+models have rotted against X's current payload shape (missing
+``public_metrics.post_count`` on users/me, 2026-08-14).
 
 Idempotency: the UTC day is claimed atomically in ``collection_runs``
 BEFORE any network access; concurrent or repeated runs exit as no-ops.
+A run that ended in 'error' may be reclaimed by the next run (nothing was
+stored, so retrying is safe and prevents data gaps).
 
 Never prints secrets. stdout is a short operator log (this script is not
 the MCP server, so stdout printing is safe here).
@@ -44,61 +49,70 @@ load_dotenv(REPO_ROOT / ".env", override=True)
 
 import analytics_store
 import x_client
+import x_usage_ledger
 
-POST_FIELDS = [
-    "created_at",
-    "author_id",
-    "conversation_id",
-    "text",
-    "public_metrics",
-    "non_public_metrics",
-    "organic_metrics",
-]
-USER_FIELDS = ["public_metrics"]
+API_BASE = "https://api.x.com"
+USER_ME_URL = f"{API_BASE}/2/users/me"
+USER_TWEETS_URL = f"{API_BASE}/2/users/{{user_id}}/tweets"
+
+TWEET_FIELDS = "created_at,author_id,conversation_id,public_metrics,non_public_metrics,organic_metrics"
+USER_FIELDS = "public_metrics"
 DEFAULT_MAX_PAGES = 1  # 1 page = up to 100 posts = 1 paid call
+PAGE_SIZE = 100
 
 
 class ApiCallCounter:
-    """Counts real X API HTTP responses on an xdk client session."""
+    """Counts real X API HTTP requests issued by the collector."""
 
     def __init__(self) -> None:
         self.count = 0
 
-    def attach(self, client: Any) -> None:
-        session = getattr(client, "session", None)
-        if session is None:
-            return
-        marker = "_x_wing_analytics_counter"
-        if getattr(session, marker, None) is self:
-            return
 
-        def count_response(response: Any, *args: Any, **kwargs: Any) -> Any:
-            self.count += 1
-            return response
+class XApiFetcher:
+    """Minimal user-context GET fetcher on x_client's canonical auth path.
 
-        session.hooks.setdefault("response", []).append(count_response)
-        setattr(session, marker, self)
+    Retries once after a forced token refresh on 401, mirroring
+    x_client.run_auth_operation's discipline for plain-requests calls.
+    """
 
+    def __init__(self, counter: ApiCallCounter) -> None:
+        self.counter = counter
 
-def _value(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
+    def _get_once(self, url: str, params: dict[str, Any], token: str):
+        import requests
 
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=30,
+        )
+        self.counter.count += 1
+        x_usage_ledger.record(
+            "official_x_http",
+            provider="official_x",
+            method="GET",
+            endpoint=url,
+            query_parameter_names=sorted(params),
+            http_status=response.status_code,
+            purpose="analytics_collection",
+            x_request_id=response.headers.get("x-request-id")
+            or response.headers.get("x-transaction-id"),
+        )
+        return response
 
-def _to_dict(obj: Any) -> dict[str, Any]:
-    if isinstance(obj, dict):
-        return obj
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    if hasattr(obj, "__dict__"):
-        return {k: v for k, v in obj.__dict__.items() if not k.startswith("_")}
-    return {}
-
-
-def _metrics_section(raw: dict[str, Any], section: str) -> dict[str, Any]:
-    value = raw.get(section)
-    return value if isinstance(value, dict) else {}
+    def get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        token = x_client.ensure_access_token()
+        response = self._get_once(url, params, token)
+        if response.status_code == 401:
+            token = x_client._refresh_from_env()
+            response = self._get_once(url, params, token)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"X API {url} returned HTTP {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+        return response.json()
 
 
 def _int(value: Any) -> Optional[int]:
@@ -110,15 +124,19 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
-def _post_metrics_row(post: Any) -> Optional[dict[str, Any]]:
+def _section(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    value = raw.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _post_metrics_row(post: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Map one API post object to a post_metrics row (raw JSON preserved)."""
-    raw = _to_dict(post)
-    post_id = str(raw.get("id") or "").strip()
+    post_id = str(post.get("id") or "").strip()
     if not post_id:
         return None
-    public = _metrics_section(raw, "public_metrics")
-    non_public = _metrics_section(raw, "non_public_metrics")
-    organic = _metrics_section(raw, "organic_metrics")
+    public = _section(post, "public_metrics")
+    non_public = _section(post, "non_public_metrics")
+    organic = _section(post, "organic_metrics")
     impressions = (
         _int(organic.get("impression_count"))
         or _int(non_public.get("impression_count"))
@@ -135,44 +153,48 @@ def _post_metrics_row(post: Any) -> Optional[dict[str, Any]]:
         "bookmarks": _int(public.get("bookmark_count")),
         "profile_clicks": _int(non_public.get("user_profile_clicks")),
         "url_clicks": _int(non_public.get("url_link_clicks")),
-        "raw": raw,
+        "raw": post,
     }
 
 
 def fetch_analytics(
-    client: Any, *, max_pages: int = DEFAULT_MAX_PAGES
+    fetcher: Any, *, max_pages: int = DEFAULT_MAX_PAGES
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Fetch follower snapshot + recent-post metrics. Caller counts calls."""
-    me = client.users.get_me(user_fields=USER_FIELDS)
-    me_raw = _to_dict(_value(me, "data", {}) or {})
-    user_id = str(me_raw.get("id") or "").strip()
+    """Fetch follower snapshot + recent-post metrics via the fetcher.
+
+    The fetcher must expose ``get_json(url, params) -> dict``; production
+    uses XApiFetcher, tests inject a mock. No SDK models involved.
+    """
+    me_payload = fetcher.get_json(USER_ME_URL, {"user.fields": USER_FIELDS})
+    me = me_payload.get("data") or {}
+    user_id = str(me.get("id") or "").strip()
     if not user_id:
         raise RuntimeError("users/me returned no user id")
-    me_public = _metrics_section(me_raw, "public_metrics")
+    me_public = _section(me, "public_metrics")
     snapshot = {
         "followers_count": _int(me_public.get("followers_count")),
         "following_count": _int(me_public.get("following_count")),
-        "raw": me_raw,
+        "raw": me,
     }
 
-    pages = client.users.get_posts(
-        id=user_id,
-        max_results=100,
-        exclude=["retweets"],
-        post_fields=POST_FIELDS,
-    )
     posts: list[dict[str, Any]] = []
-    for page_index, page in enumerate(pages):
-        if page_index >= max_pages:
-            break
-        data = _value(page, "data", None)
-        if not data:
-            continue
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            row = _post_metrics_row(item)
+    pagination_token: Optional[str] = None
+    for _ in range(max(1, max_pages)):
+        params: dict[str, Any] = {
+            "max_results": PAGE_SIZE,
+            "exclude": "retweets",
+            "tweet.fields": TWEET_FIELDS,
+        }
+        if pagination_token:
+            params["pagination_token"] = pagination_token
+        payload = fetcher.get_json(USER_TWEETS_URL.format(user_id=user_id), params)
+        for post in payload.get("data") or []:
+            row = _post_metrics_row(post)
             if row:
                 posts.append(row)
+        pagination_token = (payload.get("meta") or {}).get("next_token")
+        if not pagination_token:
+            break
     return snapshot, posts
 
 
@@ -182,13 +204,14 @@ def run(
     db_path: Optional[Path] = None,
     force: bool = False,
     max_pages: Optional[int] = None,
-    fetch_client_factory: Optional[Callable[[ApiCallCounter], Any]] = None,
+    fetcher_factory: Optional[Callable[[ApiCallCounter], Any]] = None,
 ) -> dict[str, Any]:
     """Run one collection. Returns a result dict for the CLI to report.
 
-    ``fetch_client_factory`` is a test seam: given the shared ApiCallCounter
-    it must return an authenticated xdk-compatible client. Production uses
-    x_client.run_auth_operation, so tests inject a mock without any network.
+    ``fetcher_factory`` is a test seam: given the shared ApiCallCounter it
+    must return a fetcher with ``get_json(url, params)``. Production uses
+    XApiFetcher on x_client's OAuth path; tests inject a mock with no
+    network access.
     """
     date = collection_date or datetime.now(timezone.utc).date().isoformat()
     pages = max_pages
@@ -213,19 +236,12 @@ def run(
 
         counter = ApiCallCounter()
         try:
-            if fetch_client_factory is not None:
-                client = fetch_client_factory(counter)
-                snapshot, posts = fetch_analytics(client, max_pages=pages)
-            else:
-                def operation(client: Any) -> tuple[dict, list[dict]]:
-                    counter.attach(client)
-                    return fetch_analytics(client, max_pages=pages)
-
-                snapshot, posts = x_client.run_auth_operation(
-                    operation,
-                    required_scopes={"tweet.read", "users.read"},
-                    action_name="analytics collection",
-                )
+            fetcher = (
+                fetcher_factory(counter)
+                if fetcher_factory is not None
+                else XApiFetcher(counter)
+            )
+            snapshot, posts = fetch_analytics(fetcher, max_pages=pages)
 
             analytics_store.upsert_account_snapshot(conn, date, snapshot)
             stored = analytics_store.upsert_post_metrics(conn, date, posts)

@@ -10,7 +10,6 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -67,33 +66,30 @@ POST_B = {
 }
 
 
-class MockUsersApi:
-    def __init__(self, posts=None, me=None, simulated_calls=2):
+class MockFetcher:
+    """Test fetcher with the same get_json(url, params) contract as XApiFetcher."""
+
+    def __init__(self, posts=None, me=None):
         self._posts = POST_A if posts is None else posts
         self._me = ME_PAYLOAD if me is None else me
-        self.simulated_calls = simulated_calls
 
-    def get_me(self, user_fields=None):
-        return SimpleNamespace(data=self._me)
-
-    def get_posts(self, **kwargs):
-        assert kwargs["max_results"] == 100
-        assert "non_public_metrics" in kwargs["post_fields"]
-        assert "organic_metrics" in kwargs["post_fields"]
-        assert "public_metrics" in kwargs["post_fields"]
-        page = SimpleNamespace(data=self._posts)
-        return iter([page])
-
-
-class MockClient:
-    def __init__(self, posts=None, me=None):
-        self.users = MockUsersApi(posts=posts, me=me)
+    def get_json(self, url, params):
+        if url.endswith("/users/me"):
+            assert "public_metrics" in params["user.fields"]
+            return {"data": self._me}
+        # users/:id/tweets
+        fields = params.get("tweet.fields", "")
+        assert "non_public_metrics" in fields
+        assert "organic_metrics" in fields
+        assert "public_metrics" in fields
+        assert params["max_results"] == 100
+        return {"data": self._posts, "meta": {}}
 
 
 def mock_factory(counter, posts=None, me=None):
-    """Test seam: returns a mock client; simulates 2 real HTTP calls."""
+    """Test seam: returns a mock fetcher; simulates 2 real HTTP calls."""
     counter.count += 2
-    return MockClient(posts=posts, me=me)
+    return MockFetcher(posts=posts, me=me)
 
 
 @pytest.fixture()
@@ -107,7 +103,7 @@ def test_first_run_stores_posts_snapshot_and_run(db):
     result = analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
     )
     assert result["status"] == "ok"
     assert result["post_count"] == 2
@@ -148,18 +144,18 @@ def test_second_run_same_day_is_noop(db):
     first = analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A]),
     )
     assert first["status"] == "ok"
 
     def forbidden_factory(counter):
         counter.count += 999  # must never be reached
-        return MockClient()
+        return MockFetcher()
 
     second = analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=forbidden_factory,
+        fetcher_factory=forbidden_factory,
     )
     assert second["status"] == "skipped"
     assert second["reason"] == "already_claimed"
@@ -175,13 +171,13 @@ def test_force_reruns_claimed_day(db):
     analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A]),
     )
     again = analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
         force=True,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
     )
     assert again["status"] == "ok"
     conn = sqlite3.connect(str(db))
@@ -233,25 +229,50 @@ def test_stale_running_claim_is_reclaimed(db):
 
 
 def test_failed_run_records_error_and_call_count(db):
+    class BrokenFetcher:
+        def get_json(self, url, params):
+            raise RuntimeError("boom")
+
     def broken_factory(counter):
         counter.count += 1
-        client = MockClient()
-        client.users.get_me = lambda user_fields=None: (_ for _ in ()).throw(
-            RuntimeError("boom")
-        )
-        return client
+        return BrokenFetcher()
 
     with pytest.raises(RuntimeError):
         analytics_collector.run(
             collection_date="2026-08-14",
             db_path=db,
-            fetch_client_factory=broken_factory,
+            fetcher_factory=broken_factory,
         )
     conn = analytics_store.connect(db, readonly=True)
     run = conn.execute("SELECT * FROM collection_runs").fetchone()
     assert run["status"] == "error"
     assert run["api_call_count"] == 1
     assert "boom" in run["error"]
+    conn.close()
+
+
+def test_error_run_can_be_retried_same_day(db):
+    class BrokenFetcher:
+        def get_json(self, url, params):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        analytics_collector.run(
+            collection_date="2026-08-14",
+            db_path=db,
+            fetcher_factory=lambda c: BrokenFetcher(),
+        )
+    retry = analytics_collector.run(
+        collection_date="2026-08-14",
+        db_path=db,
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A]),
+    )
+    assert retry["status"] == "ok"
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT status FROM collection_runs"
+    ).fetchone()[0] == "ok"
     conn.close()
 
 
@@ -276,7 +297,7 @@ def test_read_analytics_fresh_data_no_warning(db):
     analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A, POST_B]),
     )
     result = analytics_store.read_analytics(days=28)
     assert result["status"] == "ok"
@@ -297,7 +318,7 @@ def test_read_analytics_stale_run_warns_but_returns_data(db):
     analytics_collector.run(
         collection_date="2026-08-12",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A]),
     )
     stale_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
     conn = analytics_store.connect(db)
@@ -317,7 +338,7 @@ def test_read_analytics_never_fetches(db, monkeypatch):
     analytics_collector.run(
         collection_date="2026-08-14",
         db_path=db,
-        fetch_client_factory=lambda c: mock_factory(c, posts=[POST_A]),
+        fetcher_factory=lambda c: mock_factory(c, posts=[POST_A]),
     )
 
     def explode(*args, **kwargs):

@@ -18,6 +18,7 @@ from mcp.server import MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 
+import analytics_store
 import x_client
 import xdata.server
 
@@ -31,7 +32,7 @@ THREAD_PARTIAL_ERROR = -32003
 
 def _tool_error(message: str, code: int = INTERNAL_ERROR, data: Any = None) -> MCPError:
     """Build an MCP tool error with a structured message."""
-    return MCPError(ErrorData(code=code, message=message, data=data))
+    return MCPError(code, message, data)
 
 
 def _api_result(result: dict) -> dict:
@@ -133,6 +134,20 @@ def dm_send(text: str, user: Optional[str] = None, conversation: Optional[str] =
             x_client.api_dm_send(user=user, conversation=conversation, text=text)
         )
     )
+
+
+@mcp.tool()
+def x_read_own_analytics(days: int = 28) -> dict:
+    """Read the stored owned-account analytics: per-post metrics
+    (impressions, engagements, profile clicks, URL clicks, ...) and the
+    follower-count trend, collected daily by the system-cron collector.
+
+    READ-ONLY: serves exclusively from the local SQLite store and NEVER
+    triggers an X API fetch. If the store is empty or the newest successful
+    collection run is stale (>36h), the response carries a warning telling
+    the operator to install the system cron job (README §Analytics collector).
+    """
+    return _run_api(lambda: _api_result(analytics_store.read_analytics(days=days)))
 
 
 xdata.server.create_mcp_server(mcp=mcp)

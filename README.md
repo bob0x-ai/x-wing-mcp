@@ -34,6 +34,8 @@ All tools share one process, one `.env`, and one official `xdk` OAuth 2.0 app.
 | `x_collect_posts` | One-shot bulk collection query | `tweet.read` |
 | `x_data_status` | Server/provider status | none |
 | `x_data_healthcheck` | Provider diagnostics | none |
+| `x_usage_stats` | Local usage/cost ledger summary | none |
+| `x_read_own_analytics` | Owned-account analytics from the local store (read-only, never fetches) | none (local DB) |
 
 Read tools use an internal provider router (`official_x`, `syndication`, `socialdata`, `getxapi`).
 `max_cost_usd` is required on every read tool except status/healthcheck.
@@ -69,6 +71,51 @@ Read tools use an internal provider router (`official_x`, `syndication`, `social
 
 The wrapper uses the repo-local `uv` environment and launches the server over
 stdio. stdout is the MCP protocol stream - no other process should write to it.
+
+## Analytics collector
+
+Owned-account analytics (per-post impressions, engagements, profile clicks,
+URL clicks, follower trend) are collected by `analytics_collector.py` into
+the local SQLite store `data/x-wing-analytics.db` and served read-only via
+the `x_read_own_analytics` MCP tool.
+
+**The collector ONLY works with an operator-installed system cron job.**
+Do NOT schedule it via Hermes cron or any other agent-harness scheduler —
+multiple agent profiles run x-wing against the same account, and harness
+schedulers would multiply paid X API calls. Exactly one system cron entry
+runs it once per UTC day; the collector claims the day atomically in the
+`collection_runs` table before any network access, so duplicate or
+concurrent runs are no-ops.
+
+Example crontab entry (`crontab -e` as the service user):
+
+```
+17 4 * * * cd /home/neurosovereign/mcp/x-wing && /home/neurosovereign/.local/bin/uv run python analytics_collector.py >> logs/analytics-collector.log 2>&1
+```
+
+Facts:
+
+- One run costs exactly 2 X API calls (one free `users/me`, one paid
+  `users/:id/tweets` page of up to 100 posts, ~$0.005/post). The real call
+  count is logged per run in `collection_runs.api_call_count`; every HTTP
+  request also appears in the x_usage ledger.
+- Non-public/organic metrics exist only for posts from the last 30 days and
+  only with OAuth user context on owned posts. Daily collection is the
+  correct cadence; gaps older than 30 days are unrecoverable.
+- Auth reuses x-wing's canonical OAuth path (`x_client`). No separate
+  credential handling.
+- `x_read_own_analytics` NEVER triggers a fetch. If the store is empty or
+  the newest successful run is stale (>36h), the tool returns the available
+  data plus a visible warning pointing here.
+- Operator overrides: `--force` re-runs a claimed day, `--date YYYY-MM-DD`
+  targets a specific UTC date. A crashed run (`status='running'` older than
+  1h) is reclaimed automatically by the next run, and a run that ended in
+  `error` may be retried the same day (nothing was stored, so re-fetching
+  is safe and prevents analytics gaps).
+- HTTP is plain `requests` against api.x.com on x_client's canonical OAuth
+  path — the vendored xdk response models have rotted against X's current
+  payload shape (missing `public_metrics.post_count` on users/me as of
+  2026-08-14).
 
 ## Testing
 
