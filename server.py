@@ -28,6 +28,7 @@ mcp = MCPServer("x-wing")
 REPLY_POLICY_ERROR = -32001
 AUTH_ERROR = -32002
 THREAD_PARTIAL_ERROR = -32003
+ANALYTICS_SERVICE_ERROR = -32004
 
 
 def _tool_error(message: str, code: int = INTERNAL_ERROR, data: Any = None) -> MCPError:
@@ -54,6 +55,12 @@ def _run_api(func):
     """Execute an api_* core and map x-wing exceptions to MCP tool errors."""
     try:
         return func()
+    except analytics_client.AnalyticsServiceError as exc:
+        raise _tool_error(
+            f"[ANALYTICS_SERVICE] {exc}",
+            code=ANALYTICS_SERVICE_ERROR,
+            data={"remediation": "Configure and start the local x-analytics service; this MCP tool never fetches X analytics directly."},
+        ) from exc
     except x_client.ReplyPolicyError as exc:
         raise _tool_error(
             f"[REPLY_POLICY] {exc}",

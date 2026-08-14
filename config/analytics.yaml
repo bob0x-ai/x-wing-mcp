@@ -1,0 +1,6 @@
+# x-wing reads analytics only from this local service. Credentials, collection,
+# and SQLite persistence are owned by the x-analytics deployment.
+analytics_service:
+  enabled: true
+  base_url: "http://127.0.0.1:9684"
+  timeout_seconds: 3

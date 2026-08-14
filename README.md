@@ -79,9 +79,13 @@ stdio. stdout is the MCP protocol stream - no other process should write to it.
 loopback HTTP and never opens an analytics database or calls X directly.
 
 Collection, OAuth credentials, spend limits, and freshness policy belong to
-the `x-analytics` deployment. Set `X_ANALYTICS_URL` to its loopback endpoint
-when using a non-default address. Keep this MCP tool read-only: agents must
-not be able to trigger paid analytics collection.
+the `x-analytics` deployment. Keep this MCP tool read-only: agents must not
+be able to trigger paid analytics collection.
+
+Configure the local endpoint in `config/analytics.yaml`. x-wing accepts only
+an `http` loopback origin, uses a bounded timeout, rejects redirects and
+oversized/non-JSON responses, and reports a distinct `ANALYTICS_SERVICE` error
+when the service is missing or unreachable.
 
 ## Testing
 
