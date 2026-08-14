@@ -3,7 +3,7 @@
 ## Objective
 
 Maintain a single stdio MCP server for X (Twitter) that combines x-wing write tools
-with x_data read tools. The server lives in `/home/ubuntu/mcp/x-wing/`; all paths are
+with x_data read tools. The server lives in `/home/neurosovereign/mcp/x-wing/`; all paths are
 repo-relative so it can be relocated unchanged.
 
 ## Background
@@ -13,7 +13,7 @@ repo-relative so it can be relocated unchanged.
 - **x_data** = read-only X data router with multiple providers (`official_x`, `syndication`,
   `socialdata`, `getxapi`). Vendored as the `xdata/` package.
 - Both codebases are vendored as copies inside this repo. The original sources in
-  `/home/ubuntu/.hermes/skills/x-wing/` and `/home/ubuntu/projects/x_mcp/` are **not
+  `/home/neurosovereign/.hermes/skills/x-wing/` and `/home/neurosovereign/projects/x_mcp/` are **not
   modified**.
 - The merged server uses one X OAuth 2.0 app (`Zkh0NG1...`). Its current grant
   includes `tweet.read`, `users.read`, `like.read`, `dm.read`, and all write scopes.
@@ -28,8 +28,8 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
 
 ## Hard constraints
 
-1. **Do NOT modify** `/home/ubuntu/.hermes/skills/x-wing/`, `/home/ubuntu/projects/x-wing/`,
-   `/home/ubuntu/projects/x_mcp/`, or `~/.hermes/.env`. Vendor copies; patch only the copies.
+1. **Do NOT modify** `/home/neurosovereign/.hermes/skills/x-wing/`, `/home/neurosovereign/projects/x-wing/`,
+   `/home/neurosovereign/projects/x_mcp/`, or `~/.hermes/.env`. Vendor copies; patch only the copies.
 2. **Tokens live inside this folder** (`<repo_root>/.env`), gitignored, `chmod 600`.
 3. **Single deployment** — no dev/prod separation. One folder, one `.env`.
 4. **stdio MCP transport.** stdout is protocol — the MCP path must never `print()` to stdout.
@@ -80,10 +80,10 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
   `tests/xdata/conftest.py`.
 
 ### M3 — Merged MCP server (`server.py`)
-- Single `FastMCP("x-wing")` instance.
+- Single `MCPServer("x-wing")` instance.
 - `load_dotenv(override=True)` on `<repo_root>/.env` before importing `xdata`.
 - Existing 7 write tools + 13 read tools registered.
-- `xdata.server.create_mcp_server(mcp=mcp)` re-uses the merged FastMCP instance.
+- `xdata.server.create_mcp_server(mcp=mcp)` re-uses the merged MCP server instance.
 
 ### M4 — Tests
 - `python -m pytest tests/ -q` green (191 tests).
@@ -96,7 +96,7 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
 
 ## Deployment notes
 
-- The repo is located at `/home/ubuntu/mcp/x-wing/`; everything is repo-relative.
+- The repo is located at `/home/neurosovereign/mcp/x-wing/`; everything is repo-relative.
 - Tokens live only in `<repo_root>/.env`. After migration, no X OAuth tokens remain in
   `~/.hermes/.env` or profile `.env` files.
 - Hermes wiring:
@@ -132,7 +132,7 @@ expected tools, no `.env` changes beyond documented ones.
 
 4. **x-wing repo reconciliation** *(resolved)*
    Upstream `bob0x-ai/x-wing` and `bob0x-ai/x-ray` repos deleted; local upstream copies
-   at `/home/ubuntu/projects/x-wing` and `/home/ubuntu/projects/x_mcp` removed. This
+   at `/home/neurosovereign/projects/x-wing` and `/home/neurosovereign/projects/x_mcp` removed. This
    repo (`bob0x-ai/x-wing-mcp`) is now the canonical source of truth.
 
 ## Reference facts

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+import x_client
+from x_usage_ledger import attach_xdk_response_logging
 from xdata.contracts import CostEstimate, Metrics, Post, ProviderResult, UserProfile, UserRef
 from xdata.providers.syndication import extract_post_id, normalize_handle
 
@@ -30,55 +30,12 @@ USER_GRAPH_MAX_RESULTS = 1000
 ClientFactory = Callable[[str], Any]
 
 
-def _strip_quotes(value: str | None) -> str | None:
-    if value and len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-        return value[1:-1]
-    return value
-
-
-def _dotenv_path() -> Path:
-    """Return the .env file used by the merged x-wing MCP server.
-
-    Mirrors the resolution in x_client.py: X_WING_ENV_PATH override,
-    otherwise the repo-root .env next to this package.
-    """
-    env_override = os.getenv("X_WING_ENV_PATH")
-    if env_override:
-        return Path(env_override)
-    return Path(__file__).resolve().parent.parent.parent / ".env"
-
-
-def _env_value(primary: str, fallback: str | None = None) -> str | None:
-    value = _strip_quotes(os.getenv(primary))
-    if value:
-        return value
-    if fallback:
-        fallback_val = _strip_quotes(os.getenv(fallback))
-        if fallback_val:
-            return fallback_val
-
-    # Fallback: try to load from .env file directly
-    env_path = _dotenv_path()
-    if env_path.exists():
-        content = env_path.read_text()
-        for line in content.splitlines():
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, val = line.split('=', 1)
-                if key == primary:
-                    return val.strip('"\'').strip()
-                if key == fallback:
-                    return val.strip('"\'').strip()
-
-    return None
-
-
 def _load_xdk_client_factory() -> ClientFactory | None:
     try:
         from xdk import Client  # type: ignore
     except Exception:
         return None
-    return lambda access_token: Client(access_token=access_token)
+    return lambda access_token: attach_xdk_response_logging(Client(access_token=access_token))
 
 
 def _data_items(response: Any) -> list[Any]:
@@ -192,12 +149,19 @@ def _official_x_estimate(task: str, **kwargs: Any) -> tuple[float | None, str | 
     if task == "fetch_urls":
         values = kwargs.get("values") or []
         return len(values) * POST_READ_COST_USD, "$0.005/post read (upper bound by requested URLs)"
-    if task in {"read_user_posts_recent", "search_posts", "read_thread", "read_replies", "read_quotes"}:
+    if task == "read_user_posts_recent":
+        limit = max(USER_POSTS_MIN_RESULTS, _estimate_limit(kwargs.get("limit", 20)))
+        return limit * POST_READ_COST_USD, "$0.005/post read (includes endpoint page-size minimum)"
+    if task in {"search_posts", "read_thread", "read_replies"}:
+        limit = max(SEARCH_MIN_RESULTS, _estimate_limit(kwargs.get("limit", 20)))
+        return limit * POST_READ_COST_USD, "$0.005/post read (includes endpoint page-size minimum)"
+    if task == "read_quotes":
         limit = _estimate_limit(kwargs.get("limit", 20))
         return limit * POST_READ_COST_USD, "$0.005/post read (upper bound by requested limit)"
     if task in {"read_owned_timeline", "read_mentions"}:
-        limit = _estimate_limit(kwargs.get("limit", 20))
-        return limit * OWNED_READ_COST_USD, "$0.001/owned-account post read (upper bound by requested limit)"
+        floor = TIMELINE_MIN_RESULTS if task == "read_owned_timeline" else MENTIONS_MIN_RESULTS
+        limit = max(floor, _estimate_limit(kwargs.get("limit", 20)))
+        return limit * OWNED_READ_COST_USD, "$0.001/owned-account post read (includes endpoint page-size minimum)"
     if task == "read_follow_graph":
         limit = _estimate_limit(kwargs.get("limit", 100))
         return limit * USER_READ_COST_USD, "$0.010/user read (upper bound by requested limit)"
@@ -214,8 +178,8 @@ def _estimate_limit(value: Any) -> int:
 class OfficialXProvider:
     """Read-only official X provider.
 
-    This provider intentionally does not refresh or write tokens in v1. Token
-    refresh can be added later as a contained credential component.
+    Credential loading and refresh are delegated to x_client, the merged
+    server's single credential owner.
     """
 
     name = PROVIDER_NAME
@@ -224,7 +188,7 @@ class OfficialXProvider:
         self._client_factory = client_factory
 
     def _access_token(self) -> str | None:
-        return _env_value("X_OAUTH2_ACCESS_TOKEN", "X_ACCESS_TOKEN")
+        return x_client.get_access_token()
 
     def _client(self, token: str | None = None) -> tuple[Any | None, ProviderResult | None]:
         access_token = token or self._access_token()
@@ -250,131 +214,27 @@ class OfficialXProvider:
                 warnings=[str(exc)],
             )
 
-    def _refresh_access_token(self) -> bool:
-        """
-        Refresh the access token using the stored refresh token.
-        Returns True on success, False on failure.
-        """
-        import base64
-        import requests
-        from pathlib import Path
-
-        client_id = _env_value("X_OAUTH2_CLIENT_ID")
-        client_secret = _env_value("X_OAUTH2_CLIENT_SECRET")
-        refresh_token = _env_value("X_OAUTH2_REFRESH_TOKEN")
-
-        if not (client_id and client_secret and refresh_token):
-            return False
-
-        creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-        try:
-            r = requests.post(
-                "https://api.x.com/2/oauth2/token",
-                headers={
-                    "Authorization": f"Basic {creds}",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                timeout=15,
-            )
-        except Exception:
-            return False
-
-        if r.status_code != 200:
-            return False
-
-        data = r.json()
-        new_access = data.get("access_token")
-        new_refresh = data.get("refresh_token")
-
-        if not new_access:
-            return False
-
-        # Persist new tokens to .env
-        env_path = _dotenv_path()
-        if env_path.exists():
-            content = env_path.read_text()
-            lines = content.splitlines()
-            for i, line in enumerate(lines):
-                if line.startswith("X_OAUTH2_ACCESS_TOKEN="):
-                    lines[i] = f'X_OAUTH2_ACCESS_TOKEN="{new_access}"'
-                    break
-            else:
-                lines.append(f'X_OAUTH2_ACCESS_TOKEN="{new_access}"')
-
-            for i, line in enumerate(lines):
-                if line.startswith("X_ACCESS_TOKEN="):
-                    lines[i] = f'X_ACCESS_TOKEN="{new_access}"'
-                    break
-            else:
-                lines.append(f'X_ACCESS_TOKEN="{new_access}"')
-
-            if new_refresh:
-                for i, line in enumerate(lines):
-                    if line.startswith("X_OAUTH2_REFRESH_TOKEN="):
-                        lines[i] = f'X_OAUTH2_REFRESH_TOKEN="{new_refresh}"'
-                        break
-                else:
-                    lines.append(f'X_OAUTH2_REFRESH_TOKEN="{new_refresh}"')
-
-                for i, line in enumerate(lines):
-                    if line.startswith("X_REFRESH_TOKEN="):
-                        lines[i] = f'X_REFRESH_TOKEN="{new_refresh}"'
-                        break
-                else:
-                    lines.append(f'X_REFRESH_TOKEN="{new_refresh}"')
-
-            env_path.write_text("\n".join(lines) + "\n")
-
-        return True
-
     def _ensure_authenticated(self) -> tuple[Any | None, ProviderResult | None]:
         """
         Get authenticated client, refreshing token if needed.
         Returns (client, error_result) where error_result is None on success.
         """
-        # First try to get client normally
-        client, unavailable = self._client()
+        if not self._access_token():
+            return self._client()
+
+        try:
+            access_token = x_client.ensure_access_token()
+        except x_client.AuthRefreshError as exc:
+            return None, ProviderResult.error(
+                provider=self.name,
+                reason="auth_token_refresh_failed",
+                warnings=[str(exc)],
+            )
+
+        client, unavailable = self._client(access_token)
         if unavailable:
             return client, unavailable
-
         assert client is not None
-
-        # Check if the token is still valid by making a lightweight call
-        try:
-            self._get_me_id(client)
-            # Token is still valid
-            return client, None
-        except Exception as exc:
-            # Token might be expired - try to refresh
-            refresh_success = self._refresh_access_token()
-            if not refresh_success:
-                # Refresh failed, return the error from the validation attempt
-                return None, ProviderResult.error(
-                    provider=self.name,
-                    reason="auth_token_refresh_failed",
-                    warnings=["Failed to refresh X authentication token", str(exc)],
-                )
-
-            # Refresh succeeded - get fresh client with new token
-            client, error = self._client()
-            if error:
-                return client, error
-
-            assert client is not None
-
-            # Verify the new token works
-            try:
-                self._get_me_id(client)
-                return client, None
-            except Exception as retry_exc:
-                # New token also invalid
-                return None, ProviderResult.error(
-                    provider=self.name,
-                    reason="auth_token_validation_failed",
-                    warnings=["Refreshed token is still invalid", str(retry_exc)],
-                )
-
         return client, None
 
     def _retry_with_refresh(self, api_call: Callable[[], Any]) -> Any:
@@ -385,12 +245,9 @@ class OfficialXProvider:
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                # Ensure we have a valid token
-                client, unavailable = self._ensure_authenticated()
-                if unavailable:
-                    raise Exception(f"X API unavailable: {unavailable.reason}")
-
-                # Execute the API call
+                # Authentication was validated once before the operation. Do
+                # not validate again here: each validation is its own X API
+                # request and formerly multiplied read traffic.
                 return api_call()
 
             except Exception as exc:
@@ -402,11 +259,10 @@ class OfficialXProvider:
 
                 # Check if we should retry (first attempt failed, second attempt will work after refresh)
                 if attempt == 0:
-                    # This is the first failure - try to refresh token
-                    refresh_success = self._refresh_access_token()
-                    if not refresh_success:
-                        # Refresh failed, re-raise the original error
-                        raise Exception(f"Token refresh failed: {exc}")
+                    try:
+                        x_client.ensure_access_token()
+                    except x_client.AuthRefreshError as refresh_exc:
+                        raise Exception(f"Token refresh failed: {refresh_exc}") from exc
 
                     # Continue to next iteration (will retry with new token)
                     continue
@@ -456,7 +312,7 @@ class OfficialXProvider:
 
         posts: list[Post] = []
         warnings: list[str] = []
-        tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+        post_fields = ["created_at", "public_metrics", "text", "author_id"]
 
         def fetch_single_post(value: str) -> list[Post] | None:
             post_id = extract_post_id(value)
@@ -464,7 +320,7 @@ class OfficialXProvider:
                 warnings.append(f"invalid_post_reference:{value}")
                 return None
             try:
-                response = client.posts.get_by_id(id=post_id, tweet_fields=tweet_fields)
+                response = client.posts.get_by_id(id=post_id, post_fields=post_fields)
                 items = [_post_from_obj(item) for item in _data_items(response)]
                 return [item for item in items if item is not None]
             except Exception as exc:
@@ -510,7 +366,7 @@ class OfficialXProvider:
             )
 
         try:
-            posts = self._retry_with_refresh(resolve_and_fetch)
+            posts, billed_resources = self._retry_with_refresh(resolve_and_fetch)
         except Exception as exc:
             return ProviderResult.error(provider=self.name, reason="api_error", warnings=[str(exc)])
 
@@ -519,9 +375,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * POST_READ_COST_USD,
-                    basis="$0.005/post read",
+                    amount_usd=billed_resources * POST_READ_COST_USD,
+                    basis="$0.005/post read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -541,7 +398,7 @@ class OfficialXProvider:
             )
 
         try:
-            posts = self._retry_with_refresh(fetch_timeline)
+            posts, billed_resources = self._retry_with_refresh(fetch_timeline)
         except Exception as exc:
             return ProviderResult.error(provider=self.name, reason="api_error", warnings=[str(exc)])
 
@@ -550,9 +407,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * OWNED_READ_COST_USD,
-                    basis="$0.001/owned read",
+                    amount_usd=billed_resources * OWNED_READ_COST_USD,
+                    basis="$0.001/owned read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -572,7 +430,7 @@ class OfficialXProvider:
             )
 
         try:
-            posts = self._retry_with_refresh(fetch_mentions)
+            posts, billed_resources = self._retry_with_refresh(fetch_mentions)
         except Exception as exc:
             return ProviderResult.error(provider=self.name, reason="api_error", warnings=[str(exc)])
 
@@ -581,9 +439,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * OWNED_READ_COST_USD,
-                    basis="$0.001/owned read",
+                    amount_usd=billed_resources * OWNED_READ_COST_USD,
+                    basis="$0.001/owned read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -604,7 +463,7 @@ class OfficialXProvider:
             )
 
         try:
-            posts = self._retry_with_refresh(perform_search)
+            posts, billed_resources = self._retry_with_refresh(perform_search)
         except Exception as exc:
             return ProviderResult.error(provider=self.name, reason="api_error", warnings=[str(exc)])
 
@@ -613,9 +472,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * POST_READ_COST_USD,
-                    basis="$0.005/post read",
+                    amount_usd=billed_resources * POST_READ_COST_USD,
+                    basis="$0.005/post read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -656,7 +516,7 @@ class OfficialXProvider:
             return unavailable
         assert client is not None
         try:
-            posts = self._collect_pages(
+            posts, billed_resources = self._collect_pages(
                 client.posts.get_quoted,
                 {"id": post_id},
                 limit=limit,
@@ -670,9 +530,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * POST_READ_COST_USD,
-                    basis="$0.005/post read",
+                    amount_usd=billed_resources * POST_READ_COST_USD,
+                    basis="$0.005/post read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -690,7 +551,7 @@ class OfficialXProvider:
         try:
             user_id = handle_or_id if handle_or_id.isdigit() else self._resolve_user_id(client, handle_or_id)
             method = client.users.get_followers if graph == "followers" else client.users.get_following
-            users = self._collect_user_pages(method, {"id": user_id}, limit=limit)
+            users, billed_resources = self._collect_user_pages(method, {"id": user_id}, limit=limit)
         except AttributeError:
             return ProviderResult.unavailable(provider=self.name, reason="sdk_method_missing")
         except Exception as exc:
@@ -700,10 +561,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=users,
                 cost=CostEstimate(
-                    amount_usd=len(users) * USER_READ_COST_USD,
-                    basis="$0.010/user graph read",
+                    amount_usd=billed_resources * USER_READ_COST_USD,
+                    basis="$0.010/user graph read (returned API resources)",
                 ),
-                metadata={"graph": graph, "user_id": user_id},
+                metadata={"graph": graph, "user_id": user_id, "billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -713,7 +574,7 @@ class OfficialXProvider:
             return unavailable
         assert client is not None
         try:
-            posts = self._collect_pages(
+            posts, billed_resources = self._collect_pages(
                 client.posts.search_recent,
                 {"query": query},
                 limit=limit,
@@ -726,9 +587,10 @@ class OfficialXProvider:
                 provider=self.name,
                 items=posts,
                 cost=CostEstimate(
-                    amount_usd=len(posts) * POST_READ_COST_USD,
-                    basis="$0.005/post read",
+                    amount_usd=billed_resources * POST_READ_COST_USD,
+                    basis="$0.005/post read (returned API resources)",
                 ),
+                metadata={"billed_resource_count": billed_resources},
             )
         return ProviderResult.empty(provider=self.name)
 
@@ -740,20 +602,23 @@ class OfficialXProvider:
         limit: int,
         min_results: int = 1,
         max_results_cap: int = POSTS_MAX_RESULTS,
-    ) -> list[Post]:
+    ) -> tuple[list[Post], int]:
         capped_limit = max(1, min(int(limit), POSTS_MAX_RESULTS))
-        tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+        post_fields = ["created_at", "public_metrics", "text", "author_id"]
         request_size = max(min_results, min(capped_limit, max_results_cap))
-        kwargs = {**base_kwargs, "max_results": request_size, "tweet_fields": tweet_fields}
+        kwargs = {**base_kwargs, "max_results": request_size, "post_fields": post_fields}
         results: list[Post] = []
+        billed_resources = 0
         for page in method(**kwargs):
-            for item in _data_items(page):
+            page_items = _data_items(page)
+            billed_resources += len(page_items)
+            for item in page_items:
                 post = _post_from_obj(item)
                 if post:
                     results.append(post)
                     if len(results) >= capped_limit:
-                        return results
-        return results
+                        return results, billed_resources
+        return results, billed_resources
 
     def _collect_user_pages(
         self,
@@ -763,20 +628,23 @@ class OfficialXProvider:
         limit: int,
         min_results: int = 1,
         max_results_cap: int = USER_GRAPH_MAX_RESULTS,
-    ) -> list[UserProfile]:
+    ) -> tuple[list[UserProfile], int]:
         capped_limit = max(1, min(int(limit), POSTS_MAX_RESULTS))
         user_fields = ["created_at", "description", "public_metrics", "username", "name"]
         request_size = max(min_results, min(capped_limit, max_results_cap))
         kwargs = {**base_kwargs, "max_results": request_size, "user_fields": user_fields}
         results: list[UserProfile] = []
+        billed_resources = 0
         for page in method(**kwargs):
-            for item in _data_items(page):
+            page_items = _data_items(page)
+            billed_resources += len(page_items)
+            for item in page_items:
                 user = _user_from_obj(item)
                 if user:
                     results.append(user)
                     if len(results) >= capped_limit:
-                        return results
-        return results
+                        return results, billed_resources
+        return results, billed_resources
 
     def _resolve_user_id(self, client: Any, username: str) -> str:
         response = client.users.get_by_username(username=username)

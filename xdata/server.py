@@ -12,6 +12,7 @@ from xdata.contracts import Article, Post, ProviderResult, UserProfile
 from xdata.diagnostics import doctor_summary_from_healthcheck, doctor_summary_from_status
 from xdata.providers.syndication import normalize_handle
 from xdata.router import XDataRouter
+from x_usage_ledger import statistics as usage_statistics
 
 _SERVER_CONFIG = load_config()["server"]
 DEFAULT_LIMIT = int(_SERVER_CONFIG["default_limit"])
@@ -24,6 +25,7 @@ HEALTHCHECK_MODES = {"basic", "live", "deep"}
 DETAIL_LEVELS = {"summary", "detailed"}
 DetailLevel = Literal["summary", "detailed"]
 HealthcheckMode = Literal["basic", "live", "deep"]
+UsageStatsDetail = Literal["summary", "recent"]
 FollowGraph = Literal["followers", "following"]
 ThreadScope = Literal["conversation", "self"]
 MaxCostUsd = Annotated[
@@ -470,6 +472,24 @@ def x_data_healthcheck_handler(
     return response
 
 
+def x_usage_stats_handler(
+    *,
+    hours: int | None = 24,
+    detail: str = "summary",
+    limit: int | None = 100,
+) -> dict[str, Any]:
+    """Return local X-Wing request and estimated-cost audit statistics."""
+    detail = str(detail or "summary").strip().lower()
+    if detail not in {"summary", "recent"}:
+        return {
+            "status": "error",
+            "server": "x-wing",
+            "reason": "invalid_detail_level",
+            "metadata": {"allowed": ["recent", "summary"]},
+        }
+    return usage_statistics(hours=hours, detail=detail, limit=limit or 100)
+
+
 def x_read_thread_handler(
     value: str,
     *,
@@ -642,16 +662,16 @@ def x_collect_posts_handler(
 
 
 def create_mcp_server(router: XDataRouter | None = None, mcp: Any | None = None) -> Any:
-    """Create the FastMCP server, or register tools on an existing one.
+    """Create the MCP server, or register tools on an existing one.
 
     Imported lazily so tests and provider usage do not require MCP unless the
     server boundary is actually constructed.
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
     active_router = router or XDataRouter()
     if mcp is None:
-        mcp = FastMCP(
+        mcp = MCPServer(
             "x-data",
             instructions=(
                 "Read-only X data tools. Use task tools only; provider routing and "
@@ -960,6 +980,24 @@ def create_mcp_server(router: XDataRouter | None = None, mcp: Any | None = None)
     ) -> dict[str, Any]:
         """Run diagnostics. Prefer `basic` or `live`; use `deep` only for troubleshooting."""
         return x_data_healthcheck_handler(mode=mode, detail=detail, router=active_router)
+
+    @mcp.tool()
+    def x_usage_stats(
+        hours: Annotated[
+            int,
+            Field(description="Lookback window in hours (1 through 8,760). Default: 24."),
+        ] = 24,
+        detail: Annotated[
+            UsageStatsDetail,
+            Field(description="`summary` aggregates requests and local estimates. `recent` also returns sanitized ledger events."),
+        ] = "summary",
+        limit: Annotated[
+            int,
+            Field(description="Maximum recent ledger events when detail=`recent` (1 through 500). Default: 100."),
+        ] = 100,
+    ) -> dict[str, Any]:
+        """Audit local X API requests, provider fallbacks, and locally estimated costs. No external API call is made."""
+        return x_usage_stats_handler(hours=hours, detail=detail, limit=limit)
 
     return mcp
 

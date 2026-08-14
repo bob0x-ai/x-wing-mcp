@@ -27,7 +27,7 @@ providers:
 
   twikit:
     enabled: false
-    cookies_file: "/home/ubuntu/.hermes/x_cookies.json"
+    cookies_file: "/home/neurosovereign/.hermes/x_cookies.json"
     locale: "en-US"
     cooldown_seconds: 300
     rate_limit:

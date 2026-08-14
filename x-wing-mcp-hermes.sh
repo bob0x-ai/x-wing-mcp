@@ -12,4 +12,14 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "${SCRIPT_DIR}"
-exec python3 -m server
+
+# Use the repo-local uv environment so x-wing carries its own dependencies.
+# The server is repo-relative, so this works regardless of the user's home
+# directory or Hermes install location.
+UV=${UV:-/home/neurosovereign/.local/bin/uv}
+if [[ ! -x "${UV}" ]]; then
+    echo "x-wing: uv is missing or not executable: ${UV}" >&2
+    exit 78
+fi
+
+exec "${UV}" run python -m server

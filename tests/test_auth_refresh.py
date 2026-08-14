@@ -71,6 +71,20 @@ def test_valid_current_access_token_skips_token_endpoint(isolated_auth):
     post.assert_not_called()
 
 
+def test_refresh_adopts_token_rotated_by_sibling_process(isolated_auth):
+    env_path, _ = isolated_auth
+    env_path.write_text(
+        "X_OAUTH2_ACCESS_TOKEN=rotated_access\n"
+        "X_OAUTH2_REFRESH_TOKEN=rotated_refresh\n"
+    )
+
+    with patch("requests.get", return_value=Response(200)), patch("requests.post") as post:
+        token = x_client.refresh_access_token("stale_client", "stale_secret", "stale_refresh")
+
+    assert token == "rotated_access"
+    post.assert_not_called()
+
+
 def test_successful_refresh_persists_and_validates_new_tokens(isolated_auth):
     env_path, _ = isolated_auth
     token_payload = {

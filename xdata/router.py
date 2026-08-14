@@ -16,6 +16,7 @@ from xdata.providers.socialdata import SocialDataProvider
 from xdata.providers.stub import StubProvider
 from xdata.providers.syndication import SyndicationProvider
 from xdata.providers.twikit import TwikitProvider
+from x_usage_ledger import record as record_usage
 
 DEFAULT_ROUTES: dict[str, list[str]] = load_config()["routes"]
 
@@ -252,6 +253,20 @@ class XDataRouter:
                     items=len(result.items),
                     estimated_cost_usd=estimate.amount_usd if estimate else None,
                 )
+            )
+            record_usage(
+                "provider_attempt",
+                task=task,
+                provider=result.provider,
+                route_position=len(attempts),
+                status=result.status,
+                reason=result.reason,
+                item_count=len(result.items),
+                max_cost_usd=max_cost_usd,
+                estimated_upper_bound_usd=estimate.amount_usd if estimate else None,
+                actual_estimated_cost_usd=result.cost.amount_usd if result.cost else None,
+                cost_basis=result.cost.basis if result.cost else None,
+                warnings=list(result.warnings),
             )
 
             if result.status == "ok" and result.items:

@@ -13,6 +13,14 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 
 
+def tool_input_schema(tool):
+    """Return a tool schema across MCP SDK naming conventions."""
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema")
+    return schema
+
+
 def test_env_path_is_repo_local():
     """Importing x_client without X_WING_ENV_PATH points at repo .env."""
     # Use a subprocess so the module re-import does not pollute this test process.
@@ -75,13 +83,14 @@ def test_tools_count_and_names(tool_names):
         "x_collect_posts",
         "x_data_status",
         "x_data_healthcheck",
+        "x_usage_stats",
     }
     assert tool_names == expected
 
 
 def test_post_schema(tools):
     post = next(t for t in tools if t.name == "post")
-    schema = post.inputSchema
+    schema = tool_input_schema(post)
     assert schema["required"] == ["text"]
     assert schema["properties"]["text"]["type"] == "string"
     assert schema["properties"]["reply_to"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
@@ -91,7 +100,7 @@ def test_post_schema(tools):
 
 def test_create_thread_schema(tools):
     thread = next(t for t in tools if t.name == "create_thread")
-    schema = thread.inputSchema
+    schema = tool_input_schema(thread)
     assert schema["required"] == ["texts"]
     assert schema["properties"]["texts"]["type"] == "array"
 
@@ -99,20 +108,20 @@ def test_create_thread_schema(tools):
 def test_like_repost_schemas(tools):
     like = next(t for t in tools if t.name == "like")
     repost = next(t for t in tools if t.name == "repost")
-    assert like.inputSchema["properties"]["post_id"]["type"] == "string"
-    assert repost.inputSchema["properties"]["post_id"]["type"] == "string"
+    assert tool_input_schema(like)["properties"]["post_id"]["type"] == "string"
+    assert tool_input_schema(repost)["properties"]["post_id"]["type"] == "string"
 
 
 def test_follow_unfollow_schemas(tools):
     follow = next(t for t in tools if t.name == "follow")
     unfollow = next(t for t in tools if t.name == "unfollow")
-    assert follow.inputSchema["required"] == ["target_user_id"]
-    assert unfollow.inputSchema["required"] == ["source_user_id", "target_user_id"]
+    assert tool_input_schema(follow)["required"] == ["target_user_id"]
+    assert tool_input_schema(unfollow)["required"] == ["source_user_id", "target_user_id"]
 
 
 def test_dm_send_schema(tools):
     dm = next(t for t in tools if t.name == "dm_send")
-    schema = dm.inputSchema
+    schema = tool_input_schema(dm)
     assert schema["required"] == ["text"]
     assert schema["properties"]["user"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
     assert schema["properties"]["conversation"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
@@ -133,7 +142,7 @@ def test_read_tools_require_max_cost_usd(tools):
         "x_collect_posts",
     ]:
         tool = next(t for t in tools if t.name == name)
-        assert "max_cost_usd" in tool.inputSchema.get("required", []), f"{name} should require max_cost_usd"
+        assert "max_cost_usd" in tool_input_schema(tool).get("required", []), f"{name} should require max_cost_usd"
 
 
 @pytest.fixture
@@ -370,4 +379,3 @@ def test_create_thread_partial_failure_returns_post_ids(mock_client):
     message = str(exc_info.value)
     assert "post_0" in message
     assert "partial" in message.lower() or "THREAD_PARTIAL" in message
-

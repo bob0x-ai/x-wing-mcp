@@ -48,6 +48,7 @@ env_path = Path(os.getenv("X_WING_ENV_PATH", str(DEFAULT_ENV_PATH))).expanduser(
 load_dotenv(env_path, override=True)
 
 from xdk import Client
+from x_usage_ledger import attach_xdk_response_logging, record as record_usage
 
 SKILL_DIR = Path(__file__).resolve().parent
 AUTH_STATE_PATH = SKILL_DIR / ".x-wing-auth-state.json"
@@ -62,6 +63,16 @@ T = TypeVar("T")
 def _env_value(primary: str, fallback: str) -> Optional[str]:
     """Read OAuth credentials, preferring canonical X_OAUTH2_* names."""
     return os.getenv(primary) or os.getenv(fallback)
+
+
+def _reload_env_file() -> None:
+    """Reload the shared credential file after another process may refresh it."""
+    load_dotenv(env_path, override=True)
+
+
+def get_access_token() -> Optional[str]:
+    """Return the access token currently loaded by the canonical credential manager."""
+    return _env_value("X_OAUTH2_ACCESS_TOKEN", "X_ACCESS_TOKEN")
 
 
 def _env_scopes() -> set[str]:
@@ -201,6 +212,17 @@ def _validate_access_token(access_token: Optional[str]) -> bool:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=15,
         )
+        record_usage(
+            "official_x_http",
+            provider="official_x",
+            method="GET",
+            endpoint="https://api.x.com/2/users/me",
+            http_status=response.status_code,
+            resource_count=1 if response.status_code == 200 else 0,
+            purpose="token_validation",
+            x_request_id=response.headers.get("x-request-id") or response.headers.get("x-transaction-id"),
+            rate_limits={key: response.headers.get(key) for key in ("x-rate-limit-limit", "x-rate-limit-remaining", "x-rate-limit-reset") if response.headers.get(key) is not None},
+        )
         if response.status_code == 200:
             _write_auth_state(
                 last_validation_at=time.time(),
@@ -304,6 +326,14 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
     current_access_token = _env_value("X_OAUTH2_ACCESS_TOKEN", "X_ACCESS_TOKEN")
 
     with _auth_lock():
+        # Every MCP process has its own environment snapshot. Reload while the
+        # lock is held so a process observes a token rotated by a sibling
+        # process before attempting to consume the single-use refresh token.
+        _reload_env_file()
+        current_access_token = _env_value("X_OAUTH2_ACCESS_TOKEN", "X_ACCESS_TOKEN")
+        client_id = _env_value("X_OAUTH2_CLIENT_ID", "X_CLIENT_ID") or client_id
+        client_secret = _env_value("X_OAUTH2_CLIENT_SECRET", "X_CLIENT_SECRET") or client_secret
+        refresh_token = _env_value("X_OAUTH2_REFRESH_TOKEN", "X_REFRESH_TOKEN") or refresh_token
         state = _read_auth_state()
         now = time.time()
 
@@ -344,6 +374,17 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
 
         try:
             response = requests.post(TOKEN_URL, headers=headers, data=data, timeout=30)
+            record_usage(
+                "official_x_http",
+                provider="official_x",
+                method="POST",
+                endpoint="https://api.x.com/2/oauth2/token",
+                http_status=response.status_code,
+                resource_count=0,
+                purpose="token_refresh",
+                x_request_id=response.headers.get("x-request-id") or response.headers.get("x-transaction-id"),
+                rate_limits={key: response.headers.get(key) for key in ("x-rate-limit-limit", "x-rate-limit-remaining", "x-rate-limit-reset") if response.headers.get(key) is not None},
+            )
             response.raise_for_status()
             token_data = response.json()
 
@@ -437,6 +478,7 @@ def _update_env_file(access_token: str, refresh_token: Optional[str] = None, sco
 
 
 def _refresh_from_env() -> str:
+    _reload_env_file()
     client_id = _env_value("X_OAUTH2_CLIENT_ID", "X_CLIENT_ID")
     client_secret = _env_value("X_OAUTH2_CLIENT_SECRET", "X_CLIENT_SECRET")
     refresh_token = _env_value("X_OAUTH2_REFRESH_TOKEN", "X_REFRESH_TOKEN")
@@ -448,6 +490,33 @@ def _refresh_from_env() -> str:
     if not new_token:
         raise AuthRefreshError("OAuth refresh did not produce a validated access token.")
     return new_token
+
+
+def ensure_access_token() -> str:
+    """Return a usable user token through the one canonical refresh path.
+
+    A token-only setup is allowed for dependency-injected clients and for
+    environments where validation is handled by the SDK call itself. When
+    OAuth refresh credentials are present, validation and rotation are guarded
+    by the shared cross-process lock.
+    """
+    _reload_env_file()
+    access_token = get_access_token()
+    client_id = _env_value("X_OAUTH2_CLIENT_ID", "X_CLIENT_ID")
+    client_secret = _env_value("X_OAUTH2_CLIENT_SECRET", "X_CLIENT_SECRET")
+    refresh_token = _env_value("X_OAUTH2_REFRESH_TOKEN", "X_REFRESH_TOKEN")
+
+    if not (client_id and client_secret and refresh_token):
+        if access_token:
+            return access_token
+        raise AuthRefreshError(
+            "OAuth refresh requires client ID, client secret, and refresh token."
+        )
+
+    refreshed_token = refresh_access_token(client_id, client_secret, refresh_token)
+    if not refreshed_token:
+        raise AuthRefreshError("OAuth refresh did not produce a validated access token.")
+    return refreshed_token
 
 
 def run_auth_operation(
@@ -485,7 +554,7 @@ def run_auth_operation(
         _ensure_required_scopes(required_scopes, action_name)
 
     try:
-        retry_client = Client(access_token=new_token)
+        retry_client = attach_xdk_response_logging(Client(access_token=new_token))
         retry_result = operation(retry_client)
     except Exception as exc:
         if _is_reply_policy_failure(exc):
@@ -527,15 +596,15 @@ def get_client(use_app_only: bool = False) -> Client:
                 "Required: X_OAUTH2_ACCESS_TOKEN or X_ACCESS_TOKEN"
             )
         
-        return Client(access_token=access_token)
+        return attach_xdk_response_logging(Client(access_token=access_token))
     
     # For app-only auth (search), we can use client credentials
     # or the access token if available
     if access_token:
-        return Client(access_token=access_token)
+        return attach_xdk_response_logging(Client(access_token=access_token))
     else:
         # App-only auth using client credentials
-        return Client(client_id=client_id, client_secret=client_secret)
+        return attach_xdk_response_logging(Client(client_id=client_id, client_secret=client_secret))
 
 
 def get_my_user_id(client: Client) -> str:
@@ -994,8 +1063,8 @@ def cmd_delete(args):
 
 def cmd_get(args):
     """Get post details by ID."""
-    tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
-    response = run_auth_operation(lambda client: client.posts.get_by_id(id=args.id, tweet_fields=tweet_fields))
+    post_fields = ["created_at", "public_metrics", "text", "author_id"]
+    response = run_auth_operation(lambda client: client.posts.get_by_id(id=args.id, post_fields=post_fields))
     if response and response.data:
         post = response.data
         # Handle both dict and object formats
@@ -1029,11 +1098,11 @@ def cmd_get(args):
 def cmd_search(args):
     """Search posts (7-day window)."""
     max_results = args.limit or 10
-    tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+    post_fields = ["created_at", "public_metrics", "text", "author_id"]
     
     def fetch_search(client):
         results = []
-        for page in client.posts.search_recent(query=args.query, max_results=max_results, tweet_fields=tweet_fields):
+        for page in client.posts.search_recent(query=args.query, max_results=max_results, post_fields=post_fields):
             if page.data:
                 results.extend(page.data)
             if len(results) >= max_results:
@@ -1157,11 +1226,11 @@ def cmd_timeline(args):
     """Get home timeline."""
     my_id = run_auth_operation(get_my_user_id)
     max_results = args.limit or 10
-    tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+    post_fields = ["created_at", "public_metrics", "text", "author_id"]
     
     def fetch_timeline(client):
         results = []
-        for page in client.users.get_timeline(id=my_id, max_results=max_results, tweet_fields=tweet_fields):
+        for page in client.users.get_timeline(id=my_id, max_results=max_results, post_fields=post_fields):
             if page.data:
                 results.extend(page.data)
             if len(results) >= max_results:
@@ -1208,11 +1277,11 @@ def cmd_user_posts(args):
             return
     
     max_results = args.limit or 10
-    tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+    post_fields = ["created_at", "public_metrics", "text", "author_id"]
     
     def fetch_user_posts(client):
         results = []
-        for page in client.users.get_posts(id=user_id, max_results=max_results, tweet_fields=tweet_fields):
+        for page in client.users.get_posts(id=user_id, max_results=max_results, post_fields=post_fields):
             if page.data:
                 results.extend(page.data)
             if len(results) >= max_results:
@@ -1241,11 +1310,11 @@ def cmd_mentions(args):
     """Get mentions for authenticated user."""
     my_id = run_auth_operation(get_my_user_id)
     max_results = args.limit or 10
-    tweet_fields = ["created_at", "public_metrics", "text", "author_id"]
+    post_fields = ["created_at", "public_metrics", "text", "author_id"]
     
     def fetch_mentions(client):
         results = []
-        for page in client.users.get_mentions(id=my_id, max_results=max_results, tweet_fields=tweet_fields):
+        for page in client.users.get_mentions(id=my_id, max_results=max_results, post_fields=post_fields):
             if page.data:
                 results.extend(page.data)
             if len(results) >= max_results:

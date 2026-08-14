@@ -14,14 +14,14 @@ REPO_ROOT = Path(__file__).resolve().parent
 os.environ["X_WING_ENV_PATH"] = str(REPO_ROOT / ".env")
 load_dotenv(REPO_ROOT / ".env", override=True)
 
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server import MCPServer
+from mcp.shared.exceptions import MCPError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 
 import x_client
 import xdata.server
 
-mcp = FastMCP("x-wing")
+mcp = MCPServer("x-wing")
 
 # Application-specific MCP error codes (JSON-RPC server error range -32000..-32099)
 REPLY_POLICY_ERROR = -32001
@@ -29,9 +29,9 @@ AUTH_ERROR = -32002
 THREAD_PARTIAL_ERROR = -32003
 
 
-def _tool_error(message: str, code: int = INTERNAL_ERROR, data: Any = None) -> McpError:
+def _tool_error(message: str, code: int = INTERNAL_ERROR, data: Any = None) -> MCPError:
     """Build an MCP tool error with a structured message."""
-    return McpError(ErrorData(code=code, message=message, data=data))
+    return MCPError(ErrorData(code=code, message=message, data=data))
 
 
 def _api_result(result: dict) -> dict:

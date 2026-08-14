@@ -64,10 +64,11 @@ Read tools use an internal provider router (`official_x`, `syndication`, `social
 ## Running
 
 ```bash
-python -m server
+./x-wing-mcp-hermes.sh
 ```
 
-The server speaks MCP over stdio. stdout is the MCP protocol stream — no other process should write to it.
+The wrapper uses the repo-local `uv` environment and launches the server over
+stdio. stdout is the MCP protocol stream - no other process should write to it.
 
 ## Testing
 
@@ -94,7 +95,7 @@ python -m pytest tests/ -q
 
 ## Verification results
 
-- `python -c "import x_client; print(x_client.env_path)"` → `<repo_root>/.env`
+- `uv run python -c "import x_client; print(x_client.env_path)"` → `<repo_root>/.env`
 - MCP handshake via the wrapper script: `initialize` → `tools/list` returns exactly the 20 tools above.
 - `x_data_status` reports all configured providers healthy when tokens/keys are present.
 - Live token check via `_validate_access_token` against `users/me`: **valid** after refresh

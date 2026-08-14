@@ -36,7 +36,10 @@ def test_mcp_stdio_lists_tools_and_calls_status():
                 "x_data_healthcheck",
             }
             for tool in tools.values():
-                properties = tool.inputSchema.get("properties", {})
+                schema = getattr(tool, "input_schema", None)
+                if schema is None:
+                    schema = getattr(tool, "inputSchema")
+                properties = schema.get("properties", {})
                 assert "provider" not in properties
 
             status = await session.call_tool("x_data_status", {})
