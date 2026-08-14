@@ -87,10 +87,12 @@ runs it once per UTC day; the collector claims the day atomically in the
 `collection_runs` table before any network access, so duplicate or
 concurrent runs are no-ops.
 
-Example crontab entry (`crontab -e` as the service user):
+Example crontab entry (`crontab -e` as the service user; replace both
+placeholders with absolute paths for your installation):
 
 ```
-17 4 * * * cd /home/neurosovereign/mcp/x-wing && /home/neurosovereign/.local/bin/uv run python analytics_collector.py >> logs/analytics-collector.log 2>&1
+CRON_TZ=UTC
+17 4 * * * cd /path/to/x-wing-mcp && /path/to/uv run python analytics_collector.py >> logs/analytics-collector.log 2>&1
 ```
 
 Facts:
@@ -140,26 +142,25 @@ python -m pytest tests/ -q
 └── tests/               # vendored + new MCP tests
 ```
 
-## Verification results
+## Verification
 
-- `uv run python -c "import x_client; print(x_client.env_path)"` → `<repo_root>/.env`
-- MCP handshake via the wrapper script: `initialize` → `tools/list` returns exactly the 22 tools above.
-- `x_data_status` reports all configured providers healthy when tokens/keys are present.
-- Live token check via `_validate_access_token` against `users/me`: **valid** after refresh
-  (access token refreshed successfully; `.env` and auth-state remain 0600).
+- `uv run python -m pytest tests/ -q` passes.
+- An MCP handshake via the wrapper script (`initialize` → `tools/list`) returns the
+  22 tools documented above.
+- `x_data_status` reports the configured providers' health without exposing credentials.
+- A token check against `users/me` succeeds, and `.env` plus auth-state files remain
+  owner-readable only.
 
 ## Deployment notes
 
-- This repo is repo-relative; it can be relocated without changes.
-- Tokens live only in `<repo_root>/.env`. After migration, no X OAuth tokens should remain in
-  `~/.hermes/.env` or profile `.env` files.
-- The merged x-wing Hermes MCP server is wired into:
-  - `~/.hermes/config.yaml` (default / main profile)
-  - `~/.hermes/profiles/yan-cgo/config.yaml`
-  - `~/.hermes/profiles/scout/config.yaml` — read-only via `tools.exclude` on the 7 write tools
-- Wrapper script: `x-wing-mcp-hermes.sh` (repo root, executable). It deliberately
-  does **not** source `~/.hermes/.env`; the server reads tokens exclusively from
-  `<repo_root>/.env`.
+- This repository is relocatable: configure the MCP host with the absolute path to
+  `x-wing-mcp-hermes.sh` in its checked-out repository.
+- Store X credentials only in `<repo_root>/.env` (mode `0600`). Do not duplicate or
+  source them from shared host, agent-profile, or global environment files.
+- Register one x-wing MCP server per intended host/profile and apply that host's
+  tool-access policy—for example, exclude write tools from read-only profiles.
+- The wrapper reads only the repository-local `.env` and keeps stdout reserved for
+  the stdio MCP protocol.
 
 ## Roadmap
 
