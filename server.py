@@ -144,14 +144,36 @@ def dm_send(text: str, user: Optional[str] = None, conversation: Optional[str] =
 
 
 @mcp.tool()
-def x_read_own_analytics(days: int = 28) -> dict:
-    """Read stored owned-account analytics from the local x-analytics service.
+def x_read_own_analytics(
+    view: str = "overview",
+    window_days: int = 28,
+    post_id: Optional[str] = None,
+    sort: Optional[str] = None,
+    limit: Optional[int] = None,
+    days: Optional[int] = None,
+) -> dict:
+    """Read a compact stored owned-account analytics view from x-analytics.
 
     READ-ONLY: this tool never opens the analytics database or calls X. The
-    response is the service's latest stored observations and their ``as_of``
-    timestamp.
+    default ``overview`` includes freshness, account movement, cumulative post
+    metrics, and top posts. Use ``posts``, ``post_history`` (with post_id),
+    ``followers``, or ``status`` for a narrower view. Changes are always
+    explicitly bounded by their observed timestamps.
+
+    ``days`` remains a backwards-compatible alias for window_days.
     """
-    return _run_api(lambda: _api_result(analytics_client.read_analytics(days=days)))
+    return _run_api(
+        lambda: _api_result(
+            analytics_client.read_analytics(
+                view=view,
+                window_days=window_days,
+                post_id=post_id,
+                sort=sort,
+                limit=limit,
+                days=days,
+            )
+        )
+    )
 
 
 xdata.server.create_mcp_server(mcp=mcp)

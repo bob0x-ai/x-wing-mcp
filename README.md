@@ -87,6 +87,13 @@ an `http` loopback origin, uses a bounded timeout, rejects redirects and
 oversized/non-JSON responses, and reports a distinct `ANALYTICS_SERVICE` error
 when the service is missing or unreachable.
 
+The MCP tool defaults to `view="overview"`. It also supports `posts`,
+`post_history` (requires `post_id`), `followers`, and `status`, with a
+`window_days` of 1–30. Responses use x-analytics' versioned envelope with an
+`as_of` timestamp and freshness state. Post metrics are cumulative at `as_of`;
+reported change always names the two observation timestamps rather than
+pretending to be a calendar-period total.
+
 ## Testing
 
 ```bash

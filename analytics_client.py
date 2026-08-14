@@ -73,18 +73,54 @@ def _configuration(config_path: Path | None = None) -> tuple[str, float]:
     return base_url, max(0.1, min(timeout, 10.0))
 
 
-def read_analytics(*, days: int = 28, config_path: Path | None = None) -> dict:
+def read_analytics(
+    *,
+    view: str = "overview",
+    window_days: int = 28,
+    post_id: str | None = None,
+    sort: str | None = None,
+    limit: int | None = None,
+    days: int | None = None,
+    config_path: Path | None = None,
+) -> dict:
+    """Read one safe, compact analytics projection from the local service.
+
+    ``days`` is a compatibility alias for older MCP callers; new callers use
+    ``window_days``. This client deliberately has no write or collection path.
+    """
     try:
-        days = max(1, min(int(days), 30))
+        window_days = max(1, min(int(days if days is not None else window_days), 30))
     except (TypeError, ValueError):
-        days = 28
+        window_days = 28
+    views = {"status", "overview", "posts", "post_history", "followers"}
+    if view not in views:
+        raise AnalyticsServiceConfigurationError("analytics view must be status, overview, posts, post_history, or followers")
+    if view == "post_history":
+        if not post_id or not post_id.isdigit():
+            raise AnalyticsServiceConfigurationError("post_history requires a numeric post_id")
+        path = f"/v1/analytics/posts/{post_id}/history"
+    else:
+        path = {
+            "status": "/v1/analytics/status",
+            "overview": "/v1/analytics/overview",
+            "posts": "/v1/analytics/posts",
+            "followers": "/v1/analytics/followers",
+        }[view]
+    params: dict[str, int | str] = {}
+    if view != "status":
+        params["window"] = f"{window_days}d"
+    if view == "posts":
+        if sort:
+            params["sort"] = sort
+        if limit is not None:
+            params["limit"] = max(1, min(int(limit), 100))
     base_url, timeout = _configuration(config_path)
     token = os.getenv("X_ANALYTICS_API_TOKEN", "").strip()
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(
-        f"{base_url}/v1/analytics/posts?{urlencode({'days': days})}",
+        f"{base_url}{path}" + (f"?{urlencode(params)}" if params else ""),
         headers=headers,
         method="GET",
     )
