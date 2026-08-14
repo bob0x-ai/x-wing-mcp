@@ -18,7 +18,7 @@ from mcp.server import MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 
-import analytics_store
+import analytics_client
 import x_client
 import xdata.server
 
@@ -138,16 +138,13 @@ def dm_send(text: str, user: Optional[str] = None, conversation: Optional[str] =
 
 @mcp.tool()
 def x_read_own_analytics(days: int = 28) -> dict:
-    """Read the stored owned-account analytics: per-post metrics
-    (impressions, engagements, profile clicks, URL clicks, ...) and the
-    follower-count trend, collected daily by the system-cron collector.
+    """Read stored owned-account analytics from the local x-analytics service.
 
-    READ-ONLY: serves exclusively from the local SQLite store and NEVER
-    triggers an X API fetch. If the store is empty or the newest successful
-    collection run is stale (>36h), the response carries a warning telling
-    the operator to install the system cron job (README §Analytics collector).
+    READ-ONLY: this tool never opens the analytics database or calls X. The
+    response is the service's latest stored observations and their ``as_of``
+    timestamp.
     """
-    return _run_api(lambda: _api_result(analytics_store.read_analytics(days=days)))
+    return _run_api(lambda: _api_result(analytics_client.read_analytics(days=days)))
 
 
 xdata.server.create_mcp_server(mcp=mcp)
