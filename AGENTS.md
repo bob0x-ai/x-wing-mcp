@@ -82,7 +82,7 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
 ### M3 — Merged MCP server (`server.py`)
 - Single `MCPServer("x-wing")` instance.
 - `load_dotenv(override=True)` on `<repo_root>/.env` before importing `xdata`.
-- Existing 7 write tools + 13 read tools registered.
+- Existing 7 write tools + 15 read tools registered.
 - `xdata.server.create_mcp_server(mcp=mcp)` re-uses the merged MCP server instance.
 
 ### M4 — Tests
@@ -90,7 +90,7 @@ revoked. Hence: **tokens live ONLY in this folder's `.env`** — never shared, n
 - Added read-tool schema checks in `tests/test_tools.py`.
 
 ### M5 — Verification
-- MCP handshake lists exactly 20 tools.
+- MCP handshake lists exactly 22 tools.
 - `x_data_status` reports all configured providers healthy.
 - Live token check via `_validate_access_token` against `users/me`: valid.
 

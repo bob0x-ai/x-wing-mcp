@@ -143,7 +143,7 @@ python -m pytest tests/ -q
 ## Verification results
 
 - `uv run python -c "import x_client; print(x_client.env_path)"` → `<repo_root>/.env`
-- MCP handshake via the wrapper script: `initialize` → `tools/list` returns exactly the 20 tools above.
+- MCP handshake via the wrapper script: `initialize` → `tools/list` returns exactly the 22 tools above.
 - `x_data_status` reports all configured providers healthy when tokens/keys are present.
 - Live token check via `_validate_access_token` against `users/me`: **valid** after refresh
   (access token refreshed successfully; `.env` and auth-state remain 0600).
